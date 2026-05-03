@@ -1,0 +1,610 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #16202a;
+  background: #eef3f7;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 24px 18px;
+  background: #14212b;
+  color: #f8fbfd;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 30px;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: #2e8b7d;
+}
+
+.brand strong,
+.brand span {
+  display: block;
+}
+
+.brand span {
+  margin-top: 3px;
+  color: #aebbc6;
+  font-size: 13px;
+}
+
+.nav {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: #d7e2ea;
+  background: transparent;
+  text-align: left;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  color: #ffffff;
+  background: #243443;
+}
+
+.content {
+  padding: 28px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.topbar p {
+  margin: 0 0 5px;
+  color: #687786;
+}
+
+.topbar h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 31px;
+  letter-spacing: 0;
+}
+
+.role-pill {
+  padding: 9px 13px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #41515f;
+  box-shadow: 0 8px 24px rgba(29, 47, 64, 0.08);
+}
+
+.stack {
+  display: grid;
+  gap: 20px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.metric,
+.panel,
+.table-card,
+.entity-card,
+.deal-card,
+.task-card {
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(29, 47, 64, 0.08);
+}
+
+.metric {
+  padding: 18px;
+  border-left: 4px solid #2f79c4;
+  border-radius: 8px;
+}
+
+.metric span,
+.field span,
+.entity-head p,
+.entity-details span,
+.task-card span,
+.manager-row span,
+.settings-list span,
+.funnel-row span {
+  color: #657383;
+  font-size: 13px;
+}
+
+.metric strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 25px;
+}
+
+.metric.green { border-color: #2e8b7d; }
+.metric.amber { border-color: #c9832e; }
+.metric.red { border-color: #c85151; }
+.metric.violet { border-color: #7464c9; }
+
+.two-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 20px;
+}
+
+.panel,
+.table-card {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.panel {
+  padding: 20px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.panel-action {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  color: #2e8b7d;
+  background: #e5f3ef;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.compact-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field input,
+.field select,
+.deal-actions select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #d4dde5;
+  border-radius: 7px;
+  padding: 9px 10px;
+  color: #16202a;
+  background: #ffffff;
+}
+
+.primary-button,
+.actions button,
+.deal-actions button,
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 7px;
+  color: #ffffff;
+  background: #2e8b7d;
+  padding: 9px 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions button,
+.deal-actions button {
+  min-height: 34px;
+  background: #243443;
+}
+
+.icon-button {
+  width: 38px;
+  padding: 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid #e7edf2;
+  vertical-align: middle;
+}
+
+th {
+  color: #657383;
+  font-size: 12px;
+  text-transform: uppercase;
+  background: #f8fafc;
+}
+
+td strong,
+td span {
+  display: block;
+}
+
+td span {
+  margin-top: 4px;
+  color: #657383;
+}
+
+td svg {
+  vertical-align: -2px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #2d4b43;
+  background: #e5f3ef;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status.overdue,
+.status.lost {
+  color: #7b2b2b;
+  background: #fdecec;
+}
+
+.status.done,
+.status.won,
+.status.converted {
+  color: #24573e;
+  background: #e4f6eb;
+}
+
+.status.qualified,
+.status.planned {
+  color: #73511a;
+  background: #fff4dc;
+}
+
+.funnel {
+  display: grid;
+  gap: 14px;
+}
+
+.funnel-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.funnel-row strong,
+.funnel-row span {
+  display: block;
+}
+
+.bar,
+.progress {
+  height: 11px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7edf2;
+}
+
+.bar span,
+.progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2e8b7d, #2f79c4);
+}
+
+.activity-list,
+.task-list,
+.manager-list,
+.settings-list {
+  display: grid;
+  gap: 10px;
+}
+
+.activity,
+.manager-row,
+.settings-list div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #e2e9ef;
+  border-radius: 8px;
+}
+
+.activity p,
+.task-card p,
+.entity-card p {
+  margin: 4px 0 0;
+  color: #536271;
+}
+
+.activity time {
+  color: #7c8b98;
+  font-size: 12px;
+}
+
+.type {
+  min-width: 68px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #eff4f7;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.entity-card {
+  display: grid;
+  gap: 14px;
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.entity-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.entity-head h3 {
+  margin: 0;
+}
+
+.entity-head span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #eff4f7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.entity-details {
+  display: grid;
+  gap: 7px;
+}
+
+.kanban {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.kanban-column {
+  min-width: 220px;
+  border-radius: 8px;
+  background: #dfe8ee;
+  padding: 12px;
+}
+
+.kanban-column header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.kanban-column h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.kanban-column header span {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #ffffff;
+  font-weight: 800;
+}
+
+.deal-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.deal-card {
+  display: grid;
+  gap: 10px;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.deal-card h4,
+.task-card h3 {
+  margin: 0;
+}
+
+.deal-card p {
+  margin: 0;
+  color: #657383;
+}
+
+.deal-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.task-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 8px;
+  padding: 15px;
+}
+
+.task-list.compact .task-card {
+  box-shadow: none;
+  border: 1px solid #e2e9ef;
+}
+
+.task-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manager-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.manager-row strong,
+.manager-row span,
+.settings-list strong,
+.settings-list span {
+  display: block;
+}
+
+.settings-list div {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  border-radius: 8px;
+  color: #657383;
+  background: #ffffff;
+}
+
+@media (max-width: 1180px) {
+  .metric-grid,
+  .cards-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    height: auto;
+  }
+
+  .nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .content {
+    padding: 20px;
+  }
+
+  .topbar,
+  .two-columns,
+  .task-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .metric-grid,
+  .cards-grid,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .funnel-row {
+    grid-template-columns: 1fr;
+  }
+}
