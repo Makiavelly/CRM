@@ -1313,13 +1313,22 @@ function ProjectSettings({ projectId, project, projects = [], onProjectCreated, 
 }
 
 function Reports({ projectId, user }) {
-  const report = useQuery({ queryKey: ['report', projectId], queryFn: () => api(`/reports/project/${projectId}`) });
+  const [period, setPeriod] = useState({ from: '', to: '' });
+  const reportParams = new URLSearchParams();
+  if (period.from) reportParams.set('from', period.from);
+  if (period.to) reportParams.set('to', period.to);
+  const reportQuery = reportParams.toString();
+  const reportPath = `/reports/project/${projectId}${reportQuery ? `?${reportQuery}` : ''}`;
+  const report = useQuery({
+    queryKey: ['report', projectId, period.from, period.to],
+    queryFn: () => api(reportPath),
+  });
   if (report.isLoading) return <Loading label="Считаю метрики..." />;
   const isOwner = user.role === 'manager_owner';
 
   async function downloadCsv() {
     const token = localStorage.getItem(tokenKey);
-    const response = await fetch(`/api/reports/project/${projectId}/download`, {
+    const response = await fetch(`/api/reports/project/${projectId}/download${reportQuery ? `?${reportQuery}` : ''}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const blob = await response.blob();
@@ -1334,7 +1343,10 @@ function Reports({ projectId, user }) {
   return (
     <section className="stack">
       <div className="report-actions">
+        <TextInput label="С" type="date" value={period.from} onChange={(from) => setPeriod({ ...period, from })} />
+        <TextInput label="По" type="date" value={period.to} onChange={(to) => setPeriod({ ...period, to })} />
         <button className="primary-button" type="button" onClick={() => report.refetch()}>Сформировать отчёт</button>
+        <button className="secondary-button" type="button" onClick={() => setPeriod({ from: '', to: '' })}>Всё время</button>
         <button className="secondary-button" type="button" onClick={downloadCsv}><Download size={17} /> Скачать CSV</button>
       </div>
       <div className="metric-grid">

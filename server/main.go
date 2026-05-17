@@ -222,7 +222,7 @@ func (a *app) handleAuthed(w http.ResponseWriter, r *http.Request, path string, 
 		writeResult(w, map[string]bool{"ok": true}, err)
 	case r.Method == http.MethodGet && path == "/dashboard":
 		projectID, _ := strconv.ParseInt(r.URL.Query().Get("projectId"), 10, 64)
-		a.dashboardResponse(w, projectID, user)
+		a.dashboardResponse(w, r, projectID, user)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/reports/project/"):
 		a.handleReportRoutes(w, r, path, user)
 	default:
@@ -350,10 +350,10 @@ func (a *app) handleReportRoutes(w http.ResponseWriter, r *http.Request, path st
 		return
 	}
 	if len(parts) == 4 && parts[3] == "download" {
-		a.downloadReport(w, projectID, user)
+		a.downloadReport(w, r, projectID, user)
 		return
 	}
-	a.dashboardResponse(w, projectID, user)
+	a.dashboardResponse(w, r, projectID, user)
 }
 
 func (a *app) register(w http.ResponseWriter, r *http.Request) {
@@ -1321,19 +1321,141 @@ func interactionTypeText(kind string) string {
 	}
 }
 
-func (a *app) dashboardResponse(w http.ResponseWriter, projectID int64, user User) {
+type reportPeriod struct {
+	From   time.Time
+	To     time.Time
+	Active bool
+}
+
+func reportPeriodFromRequest(r *http.Request) (reportPeriod, error) {
+	fromRaw := strings.TrimSpace(r.URL.Query().Get("from"))
+	toRaw := strings.TrimSpace(r.URL.Query().Get("to"))
+	if fromRaw == "" && toRaw == "" {
+		return reportPeriod{}, nil
+	}
+	var period reportPeriod
+	if fromRaw != "" {
+		from, err := time.ParseInLocation("2006-01-02", fromRaw, time.Local)
+		if err != nil {
+			return period, fmt.Errorf("некорректная дата начала периода")
+		}
+		period.From = from
+	}
+	if toRaw != "" {
+		to, err := time.ParseInLocation("2006-01-02", toRaw, time.Local)
+		if err != nil {
+			return period, fmt.Errorf("некорректная дата окончания периода")
+		}
+		period.To = to.Add(24*time.Hour - time.Nanosecond)
+	}
+	if !period.From.IsZero() && !period.To.IsZero() && period.From.After(period.To) {
+		return period, fmt.Errorf("дата начала не может быть позже даты окончания")
+	}
+	period.Active = true
+	return period, nil
+}
+
+func (period reportPeriod) sqlCondition(column string, args *[]any) string {
+	if !period.Active {
+		return ""
+	}
+	out := ""
+	if !period.From.IsZero() {
+		out += " AND date(" + column + ") >= date(?)"
+		*args = append(*args, period.From.Format("2006-01-02"))
+	}
+	if !period.To.IsZero() {
+		out += " AND date(" + column + ") <= date(?)"
+		*args = append(*args, period.To.Format("2006-01-02"))
+	}
+	return out
+}
+
+func (period reportPeriod) sqlLocalCondition(column string, args *[]any) string {
+	if !period.Active {
+		return ""
+	}
+	out := ""
+	localColumn := "datetime(" + column + ", 'localtime')"
+	if !period.From.IsZero() {
+		out += " AND date(" + localColumn + ") >= date(?)"
+		*args = append(*args, period.From.Format("2006-01-02"))
+	}
+	if !period.To.IsZero() {
+		out += " AND date(" + localColumn + ") <= date(?)"
+		*args = append(*args, period.To.Format("2006-01-02"))
+	}
+	return out
+}
+
+func (period reportPeriod) contains(value string) bool {
+	if !period.Active || value == "" {
+		return true
+	}
+	t, err := parseInteractionTime(value)
+	if err != nil {
+		return true
+	}
+	if !period.From.IsZero() && t.Before(period.From) {
+		return false
+	}
+	if !period.To.IsZero() && t.After(period.To) {
+		return false
+	}
+	return true
+}
+
+func (period reportPeriod) containsSystemTime(value string) bool {
+	if !period.Active || value == "" {
+		return true
+	}
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+			localTime := t.In(time.Local)
+			if !period.From.IsZero() && localTime.Before(period.From) {
+				return false
+			}
+			if !period.To.IsZero() && localTime.After(period.To) {
+				return false
+			}
+			return true
+		}
+	}
+	return true
+}
+
+func (a *app) dashboardResponse(w http.ResponseWriter, r *http.Request, projectID int64, user User) {
 	if projectID == 0 || !a.canAccessProject(projectID, user) {
 		writeError(w, http.StatusForbidden, "Нет доступа к проекту")
 		return
 	}
-	data, err := a.dashboard(projectID, user)
+	period, err := reportPeriodFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	data, err := a.dashboard(projectID, user, period)
 	writeResult(w, data, err)
 }
 
-func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
+func (a *app) dashboard(projectID int64, user User, period reportPeriod) (map[string]any, error) {
 	clients, err := a.listClients(projectID, user)
 	if err != nil {
 		return nil, err
+	}
+	if period.Active {
+		filtered := []map[string]any{}
+		for _, client := range clients {
+			if period.containsSystemTime(str(client["created_at"])) {
+				filtered = append(filtered, client)
+			}
+		}
+		clients = filtered
 	}
 	stages, err := a.listStages(projectID)
 	if err != nil {
@@ -1370,6 +1492,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 
 	plannedQuery := "SELECT COUNT(*) FROM client_interactions WHERE project_id = ? AND status = 'planned'"
 	args := []any{projectID}
+	plannedQuery += period.sqlCondition("scheduled_at", &args)
 	if user.Role == "sales_manager" {
 		plannedQuery += " AND manager_id = ?"
 		args = append(args, user.ID)
@@ -1380,6 +1503,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	_ = a.db.QueryRow("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", user.ID).Scan(&unread)
 	transitionQuery := "SELECT COUNT(*) FROM stage_transitions WHERE project_id = ?"
 	transitionArgs := []any{projectID}
+	transitionQuery += period.sqlLocalCondition("created_at", &transitionArgs)
 	if user.Role == "sales_manager" {
 		transitionQuery += " AND manager_id = ?"
 		transitionArgs = append(transitionArgs, user.ID)
@@ -1388,6 +1512,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	_ = a.db.QueryRow(transitionQuery, transitionArgs...).Scan(&transitionsCount)
 	completedQuery := "SELECT COUNT(*) FROM client_interactions WHERE project_id = ? AND status = 'completed'"
 	completedArgs := []any{projectID}
+	completedQuery += period.sqlLocalCondition("completed_at", &completedArgs)
 	if user.Role == "sales_manager" {
 		completedQuery += " AND manager_id = ?"
 		completedArgs = append(completedArgs, user.ID)
@@ -1396,6 +1521,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	_ = a.db.QueryRow(completedQuery, completedArgs...).Scan(&completedInteractions)
 	overdueQuery := "SELECT COUNT(*) FROM client_interactions WHERE project_id = ? AND status IN ('missed', 'planned') AND scheduled_at < datetime('now')"
 	overdueArgs := []any{projectID}
+	overdueQuery += period.sqlCondition("scheduled_at", &overdueArgs)
 	if user.Role == "sales_manager" {
 		overdueQuery += " AND manager_id = ?"
 		overdueArgs = append(overdueArgs, user.ID)
@@ -1409,6 +1535,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		WHERE crm_clients.project_id = ?
 	`
 	notesArgs := []any{projectID}
+	notesQuery += period.sqlLocalCondition("client_notes.created_at", &notesArgs)
 	if user.Role == "sales_manager" {
 		notesQuery += " AND client_notes.manager_id = ?"
 		notesArgs = append(notesArgs, user.ID)
@@ -1420,7 +1547,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		avgDeal = activeAmount / float64(len(clients))
 	}
 
-	managers, err := a.managerMetrics(projectID, user)
+	managers, err := a.managerMetrics(projectID, user, period)
 	if err != nil {
 		return nil, err
 	}
@@ -1431,6 +1558,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		WHERE client_interactions.project_id = ? AND client_interactions.status = 'planned'
 	`
 	upcomingArgs := []any{projectID}
+	upcomingQuery += period.sqlCondition("client_interactions.scheduled_at", &upcomingArgs)
 	if user.Role == "sales_manager" {
 		upcomingQuery += " AND client_interactions.manager_id = ?"
 		upcomingArgs = append(upcomingArgs, user.ID)
@@ -1457,6 +1585,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 			AND client_interactions.scheduled_at < datetime('now')
 	`
 	overdueDetailsArgs := []any{projectID}
+	overdueDetailsQuery += period.sqlCondition("client_interactions.scheduled_at", &overdueDetailsArgs)
 	if user.Role == "sales_manager" {
 		overdueDetailsQuery += " AND client_interactions.manager_id = ?"
 		overdueDetailsArgs = append(overdueDetailsArgs, user.ID)
@@ -1478,6 +1607,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		WHERE stage_transitions.project_id = ?
 	`
 	transitionsArgs := []any{projectID}
+	transitionsQuery += period.sqlLocalCondition("stage_transitions.created_at", &transitionsArgs)
 	if user.Role == "sales_manager" {
 		transitionsQuery += " AND stage_transitions.manager_id = ?"
 		transitionsArgs = append(transitionsArgs, user.ID)
@@ -1509,32 +1639,59 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		"upcoming":    upcoming,
 		"overdue":     overdueDetails,
 		"transitions": transitions,
+		"period": map[string]any{
+			"active": period.Active,
+			"from": func() string {
+				if period.From.IsZero() {
+					return ""
+				}
+				return period.From.Format("2006-01-02")
+			}(),
+			"to": func() string {
+				if period.To.IsZero() {
+					return ""
+				}
+				return period.To.Format("2006-01-02")
+			}(),
+		},
 	}, nil
 }
 
-func (a *app) managerMetrics(projectID int64, user User) ([]map[string]any, error) {
+func (a *app) managerMetrics(projectID int64, user User, period reportPeriod) ([]map[string]any, error) {
+	clientPeriodArgs := []any{}
+	clientPeriodCondition := period.sqlLocalCondition("crm_clients.created_at", &clientPeriodArgs)
+	transitionPeriodArgs := []any{}
+	transitionPeriodCondition := period.sqlLocalCondition("stage_transitions.created_at", &transitionPeriodArgs)
+	completedPeriodArgs := []any{}
+	completedPeriodCondition := period.sqlLocalCondition("client_interactions.completed_at", &completedPeriodArgs)
+	overduePeriodArgs := []any{}
+	overduePeriodCondition := period.sqlCondition("client_interactions.scheduled_at", &overduePeriodArgs)
 	query := `
 		SELECT crm_users.id, crm_users.first_name || ' ' || crm_users.last_name AS name,
 			(
 				SELECT COUNT(*) FROM crm_clients
 				WHERE crm_clients.project_id = project_members.project_id
 					AND crm_clients.assigned_manager_id = crm_users.id
+					` + clientPeriodCondition + `
 			) AS clients_count,
 			(
 				SELECT COALESCE(SUM(deal_amount), 0) FROM crm_clients
 				WHERE crm_clients.project_id = project_members.project_id
 					AND crm_clients.assigned_manager_id = crm_users.id
+					` + clientPeriodCondition + `
 			) AS pipeline_amount,
 			(
 				SELECT COUNT(*) FROM stage_transitions
 				WHERE stage_transitions.project_id = project_members.project_id
 					AND stage_transitions.manager_id = crm_users.id
+					` + transitionPeriodCondition + `
 			) AS transitions_count,
 			(
 				SELECT COUNT(*) FROM client_interactions
 				WHERE client_interactions.project_id = project_members.project_id
 					AND client_interactions.manager_id = crm_users.id
 					AND client_interactions.status = 'completed'
+					` + completedPeriodCondition + `
 			) AS completed_interactions,
 			(
 				SELECT COUNT(*) FROM client_interactions
@@ -1542,12 +1699,19 @@ func (a *app) managerMetrics(projectID int64, user User) ([]map[string]any, erro
 					AND client_interactions.manager_id = crm_users.id
 					AND client_interactions.status IN ('missed', 'planned')
 					AND client_interactions.scheduled_at < datetime('now')
+					` + overduePeriodCondition + `
 			) AS overdue_interactions
 		FROM project_members
 		JOIN crm_users ON crm_users.id = project_members.user_id
 		WHERE project_members.project_id = ? AND crm_users.role = 'sales_manager'
 	`
-	args := []any{projectID}
+	args := []any{}
+	args = append(args, clientPeriodArgs...)
+	args = append(args, clientPeriodArgs...)
+	args = append(args, transitionPeriodArgs...)
+	args = append(args, completedPeriodArgs...)
+	args = append(args, overduePeriodArgs...)
+	args = append(args, projectID)
 	if user.Role == "sales_manager" {
 		query += " AND crm_users.id = ?"
 		args = append(args, user.ID)
@@ -1558,8 +1722,13 @@ func (a *app) managerMetrics(projectID int64, user User) ([]map[string]any, erro
 	return a.queryMaps(query, args...)
 }
 
-func (a *app) downloadReport(w http.ResponseWriter, projectID int64, user User) {
-	data, err := a.dashboard(projectID, user)
+func (a *app) downloadReport(w http.ResponseWriter, r *http.Request, projectID int64, user User) {
+	period, err := reportPeriodFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	data, err := a.dashboard(projectID, user, period)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
