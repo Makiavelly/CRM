@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/tls"
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
@@ -12,6 +14,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"path/filepath"
@@ -55,6 +58,8 @@ type User struct {
 }
 
 func main() {
+	loadEnvFile(".env")
+
 	db, err := openDB()
 	if err != nil {
 		log.Fatal(err)
@@ -107,6 +112,38 @@ func loadEmailConfig() emailConfig {
 		User: os.Getenv("SMTP_USER"),
 		Pass: os.Getenv("SMTP_PASS"),
 		From: from,
+	}
+}
+
+func loadEnvFile(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("failed to read %s: %v", path, err)
+		}
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		if key != "" {
+			_ = os.Setenv(key, value)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("failed to parse %s: %v", path, err)
 	}
 }
 
@@ -1021,6 +1058,10 @@ func (a *app) sendInteractionReminder(row map[string]any, scheduledAt time.Time)
 func (a *app) sendEmail(to, subject, body string) error {
 	addr := a.mail.Host + ":" + a.mail.Port
 	auth := smtp.PlainAuth("", a.mail.User, a.mail.Pass, a.mail.Host)
+	fromAddress, err := envelopeEmailAddress(a.mail.From)
+	if err != nil {
+		return err
+	}
 	message := strings.Join([]string{
 		"From: " + a.mail.From,
 		"To: " + to,
@@ -1030,7 +1071,49 @@ func (a *app) sendEmail(to, subject, body string) error {
 		"",
 		body,
 	}, "\r\n")
-	return smtp.SendMail(addr, auth, a.mail.From, []string{to}, []byte(message))
+	if a.mail.Port == "465" {
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: a.mail.Host, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		client, err := smtp.NewClient(conn, a.mail.Host)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		if err := client.Auth(auth); err != nil {
+			return err
+		}
+		if err := client.Mail(fromAddress); err != nil {
+			return err
+		}
+		if err := client.Rcpt(to); err != nil {
+			return err
+		}
+		writer, err := client.Data()
+		if err != nil {
+			return err
+		}
+		if _, err := writer.Write([]byte(message)); err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if err := writer.Close(); err != nil {
+			return err
+		}
+		return client.Quit()
+	}
+	return smtp.SendMail(addr, auth, fromAddress, []string{to}, []byte(message))
+}
+
+func envelopeEmailAddress(value string) (string, error) {
+	address, err := mail.ParseAddress(value)
+	if err != nil {
+		return "", err
+	}
+	return address.Address, nil
 }
 
 func parseInteractionTime(value string) (time.Time, error) {
