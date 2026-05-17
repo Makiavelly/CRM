@@ -171,10 +171,13 @@ func (a *app) handleProjectRoutes(w http.ResponseWriter, r *http.Request, path s
 	case len(parts) == 3 && parts[2] == "members" && r.Method == http.MethodPost:
 		a.addMember(w, r, projectID, user)
 	case len(parts) == 3 && parts[2] == "pipeline-stages" && r.Method == http.MethodGet:
-		rows, err := a.queryMaps("SELECT * FROM funnel_stages WHERE project_id = ? ORDER BY position", projectID)
+		rows, err := a.listStages(projectID)
 		writeResult(w, rows, err)
 	case len(parts) == 3 && parts[2] == "pipeline-stages" && r.Method == http.MethodPost:
 		a.addStage(w, r, projectID, user)
+	case len(parts) == 4 && parts[2] == "pipeline-stages" && r.Method == http.MethodDelete:
+		stageID, _ := strconv.ParseInt(parts[3], 10, 64)
+		a.deleteStage(w, projectID, stageID, user)
 	case len(parts) == 3 && parts[2] == "clients" && r.Method == http.MethodGet:
 		rows, err := a.listClients(projectID, user)
 		writeResult(w, rows, err)
@@ -363,6 +366,10 @@ func (a *app) createProject(w http.ResponseWriter, r *http.Request, user User) {
 	}
 	projectID, _ := res.LastInsertId()
 	_, _ = a.db.Exec("INSERT INTO project_members (project_id, user_id, role_in_project) VALUES (?, ?, 'owner')", projectID, user.ID)
+	if err := a.createDefaultStages(projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	project, err := a.getProject(projectID)
 	writeResult(w, project, err)
 }
@@ -451,6 +458,52 @@ func (a *app) addStage(w http.ResponseWriter, r *http.Request, projectID int64, 
 	writeResultStatus(w, row, err, http.StatusCreated)
 }
 
+func (a *app) deleteStage(w http.ResponseWriter, projectID, stageID int64, user User) {
+	if user.Role != "manager_owner" {
+		writeError(w, http.StatusForbidden, "Доступно только управляющему")
+		return
+	}
+	var count int
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM funnel_stages WHERE id = ? AND project_id = ?", stageID, projectID).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if count == 0 {
+		writeError(w, http.StatusNotFound, "Этап не найден")
+		return
+	}
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM crm_clients WHERE current_stage_id = ?", stageID).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if count > 0 {
+		writeError(w, http.StatusConflict, "Нельзя удалить этап, пока на нем есть клиенты")
+		return
+	}
+	if err := a.db.QueryRow("SELECT COUNT(*) FROM stage_transitions WHERE from_stage_id = ? OR to_stage_id = ?", stageID, stageID).Scan(&count); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if count > 0 {
+		writeError(w, http.StatusConflict, "Нельзя удалить этап, который уже есть в истории переходов")
+		return
+	}
+	if _, err := a.db.Exec("DELETE FROM funnel_stages WHERE id = ? AND project_id = ?", stageID, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_, _ = a.db.Exec(`
+		UPDATE funnel_stages
+		SET position = (
+			SELECT COUNT(*) FROM funnel_stages AS previous
+			WHERE previous.project_id = funnel_stages.project_id
+				AND previous.position <= funnel_stages.position
+		)
+		WHERE project_id = ?
+	`, projectID)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *app) createClient(w http.ResponseWriter, r *http.Request, projectID int64, user User) {
 	if user.Role != "manager_owner" {
 		writeError(w, http.StatusForbidden, "Клиентов создает управляющий")
@@ -467,7 +520,10 @@ func (a *app) createClient(w http.ResponseWriter, r *http.Request, projectID int
 	}
 	stageID := asInt64(req["current_stage_id"])
 	if stageID == 0 {
-		_ = a.db.QueryRow("SELECT id FROM funnel_stages WHERE project_id = ? ORDER BY position LIMIT 1", projectID).Scan(&stageID)
+		stages, _ := a.listStages(projectID)
+		if len(stages) > 0 {
+			stageID = asInt64(stages[0]["id"])
+		}
 	}
 	if stageID == 0 {
 		writeError(w, http.StatusBadRequest, "Сначала создайте этапы воронки")
@@ -654,13 +710,25 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	stages, err := a.queryMaps("SELECT * FROM funnel_stages WHERE project_id = ? ORDER BY position", projectID)
+	stages, err := a.listStages(projectID)
 	if err != nil {
 		return nil, err
 	}
 	var activeAmount float64
+	successStages := map[int64]bool{}
+	for _, stage := range stages {
+		if asInt64(stage["is_final_success"]) == 1 {
+			successStages[asInt64(stage["id"])] = true
+		}
+	}
+	var wonClients int64
+	var wonAmount float64
 	for _, client := range clients {
 		activeAmount += asFloat(client["deal_amount"])
+		if successStages[asInt64(client["current_stage_id"])] {
+			wonClients++
+			wonAmount += asFloat(client["deal_amount"])
+		}
 	}
 	for _, stage := range stages {
 		var count int64
@@ -685,6 +753,47 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	_ = a.db.QueryRow(plannedQuery, args...).Scan(&planned)
 	var unread int64
 	_ = a.db.QueryRow("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", user.ID).Scan(&unread)
+	transitionQuery := "SELECT COUNT(*) FROM stage_transitions WHERE project_id = ?"
+	transitionArgs := []any{projectID}
+	if user.Role == "sales_manager" {
+		transitionQuery += " AND manager_id = ?"
+		transitionArgs = append(transitionArgs, user.ID)
+	}
+	var transitionsCount int64
+	_ = a.db.QueryRow(transitionQuery, transitionArgs...).Scan(&transitionsCount)
+	completedQuery := "SELECT COUNT(*) FROM client_interactions WHERE project_id = ? AND status = 'completed'"
+	completedArgs := []any{projectID}
+	if user.Role == "sales_manager" {
+		completedQuery += " AND manager_id = ?"
+		completedArgs = append(completedArgs, user.ID)
+	}
+	var completedInteractions int64
+	_ = a.db.QueryRow(completedQuery, completedArgs...).Scan(&completedInteractions)
+	overdueQuery := "SELECT COUNT(*) FROM client_interactions WHERE project_id = ? AND status IN ('missed', 'planned') AND scheduled_at < datetime('now')"
+	overdueArgs := []any{projectID}
+	if user.Role == "sales_manager" {
+		overdueQuery += " AND manager_id = ?"
+		overdueArgs = append(overdueArgs, user.ID)
+	}
+	var overdueInteractions int64
+	_ = a.db.QueryRow(overdueQuery, overdueArgs...).Scan(&overdueInteractions)
+	notesQuery := `
+		SELECT COUNT(*)
+		FROM client_notes
+		JOIN crm_clients ON crm_clients.id = client_notes.client_id
+		WHERE crm_clients.project_id = ?
+	`
+	notesArgs := []any{projectID}
+	if user.Role == "sales_manager" {
+		notesQuery += " AND client_notes.manager_id = ?"
+		notesArgs = append(notesArgs, user.ID)
+	}
+	var notesCount int64
+	_ = a.db.QueryRow(notesQuery, notesArgs...).Scan(&notesCount)
+	var avgDeal float64
+	if len(clients) > 0 {
+		avgDeal = activeAmount / float64(len(clients))
+	}
 
 	managers, err := a.managerMetrics(projectID)
 	if err != nil {
@@ -724,10 +833,17 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	}
 	return map[string]any{
 		"stats": map[string]any{
-			"clients":             len(clients),
-			"activeAmount":        activeAmount,
-			"plannedInteractions": planned,
-			"unreadNotifications": unread,
+			"clients":               len(clients),
+			"activeAmount":          activeAmount,
+			"plannedInteractions":   planned,
+			"unreadNotifications":   unread,
+			"transitions":           transitionsCount,
+			"completedInteractions": completedInteractions,
+			"overdueInteractions":   overdueInteractions,
+			"notes":                 notesCount,
+			"wonClients":            wonClients,
+			"wonAmount":             wonAmount,
+			"avgDeal":               avgDeal,
 		},
 		"stages":      stages,
 		"managers":    managers,
@@ -835,6 +951,20 @@ func (a *app) listMembers(projectID int64) ([]User, error) {
 		users = append(users, publicUser(row))
 	}
 	return users, nil
+}
+
+func (a *app) listStages(projectID int64) ([]map[string]any, error) {
+	rows, err := a.queryMaps("SELECT * FROM funnel_stages WHERE project_id = ? ORDER BY position", projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		if err := a.createDefaultStages(projectID); err != nil {
+			return nil, err
+		}
+		return a.queryMaps("SELECT * FROM funnel_stages WHERE project_id = ? ORDER BY position", projectID)
+	}
+	return rows, nil
 }
 
 func (a *app) listClients(projectID int64, user User) ([]map[string]any, error) {
@@ -1037,6 +1167,10 @@ func (a *app) createDefaultCompanyProject(ownerID int64, companyName string) err
 	if _, err := a.db.Exec("INSERT INTO project_members (project_id, user_id, role_in_project) VALUES (?, ?, 'owner')", projectID, ownerID); err != nil {
 		return err
 	}
+	return a.createDefaultStages(projectID)
+}
+
+func (a *app) createDefaultStages(projectID int64) error {
 	stages := []string{"Лид", "Заинтересованность", "Потребность", "Переговоры", "Сделка", "Отказ"}
 	for i, name := range stages {
 		_, err := a.db.Exec(`
