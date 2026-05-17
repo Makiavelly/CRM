@@ -4,3 +4,6 @@ server/data/*.db
 server/data/*.db-*
 .env
 *.log
+
+Kursovaya_rabota_CRM.docx
+db_er.drawio
