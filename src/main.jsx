@@ -1,41 +1,41 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BarChart3,
+  Bell,
   BriefcaseBusiness,
+  CalendarClock,
   CheckCircle2,
-  ClipboardList,
+  ChevronRight,
+  Download,
   Gauge,
-  LayoutDashboard,
-  Mail,
-  Phone,
+  LogOut,
+  MessageSquareText,
   Plus,
+  Search,
   Settings,
-  UserRound,
+  UserPlus,
   UsersRound,
 } from 'lucide-react';
 import './styles.css';
 
 const queryClient = new QueryClient();
-
-const tabs = [
-  { id: 'dashboard', label: 'Обзор', icon: LayoutDashboard },
-  { id: 'leads', label: 'Лиды', icon: UserRound },
-  { id: 'clients', label: 'Клиенты', icon: UsersRound },
-  { id: 'deals', label: 'Воронка', icon: BriefcaseBusiness },
-  { id: 'tasks', label: 'Задачи', icon: ClipboardList },
-  { id: 'reports', label: 'Отчеты', icon: BarChart3 },
-  { id: 'settings', label: 'Настройки', icon: Settings },
-];
+const tokenKey = 'sales_crm_token';
+const selectedProjectKey = 'sales_crm_selected_project';
+const liveRefreshMs = 5000;
 
 async function api(path, options = {}) {
+  const token = localStorage.getItem(tokenKey);
   const response = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
-
   const data = await response.json().catch(() => null);
   if (!response.ok) throw new Error(data?.error || 'Ошибка запроса');
   return data;
@@ -50,13 +50,200 @@ function money(value) {
 }
 
 function dateText(value) {
-  if (!value) return 'Без срока';
-  return new Intl.DateTimeFormat('ru-RU').format(new Date(value));
+  if (!value) return 'Без даты';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function dateGroupText(value) {
+  if (!value) return 'Без даты';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(value));
+}
+
+function timeText(value) {
+  if (!value) return '';
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function dateKey(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function isInteractionOverdue(item) {
+  return item?.status !== 'completed' && new Date(item?.scheduled_at).getTime() < Date.now();
+}
+
+function interactionStatusText(item) {
+  if (item?.status === 'completed') return 'выполнено';
+  if (item?.status === 'missed' || isInteractionOverdue(item)) return 'просрочено';
+  return 'запланировано';
+}
+
+function monthTitle(value) {
+  const date = new Date(`${value}-01T00:00`);
+  return new Intl.DateTimeFormat('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+}
+
+function buildCalendarDays(monthValue) {
+  const [year, month] = monthValue.split('-').map(Number);
+  const firstDay = new Date(year, month - 1, 1);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const leading = (firstDay.getDay() + 6) % 7;
+  return [
+    ...Array.from({ length: leading }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, index) => {
+      const day = index + 1;
+      return {
+        day,
+        key: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }),
+  ];
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const ActiveIcon = tabs.find((tab) => tab.id === activeTab)?.icon || LayoutDashboard;
+  const [token, setToken] = useState(localStorage.getItem(tokenKey));
+  const [selectedProjectId, setSelectedProjectId] = useState(() => {
+    const savedProjectId = Number(localStorage.getItem(selectedProjectKey));
+    return savedProjectId || null;
+  });
+
+  const me = useQuery({
+    queryKey: ['me', token],
+    queryFn: () => api('/auth/me'),
+    enabled: Boolean(token),
+    retry: false,
+  });
+
+  if (!token) return <AuthScreen onAuth={(nextToken) => setToken(nextToken)} />;
+  if (me.isError) return <AuthScreen onAuth={(nextToken) => setToken(nextToken)} expired />;
+  if (me.isLoading) return <Loading label="Загрузка профиля..." />;
+
+  const projects = me.data.projects || [];
+  const projectId = projects.some((item) => item.id === selectedProjectId) ? selectedProjectId : projects[0]?.id;
+  const user = me.data.user;
+
+  function changeProject(nextProjectId) {
+    const normalizedProjectId = nextProjectId ? Number(nextProjectId) : null;
+    if (normalizedProjectId) localStorage.setItem(selectedProjectKey, String(normalizedProjectId));
+    else localStorage.removeItem(selectedProjectKey);
+    setSelectedProjectId(normalizedProjectId);
+  }
+
+  return (
+    <CrmShell
+      user={user}
+      projects={projects}
+      projectId={projectId}
+      onProjectChange={changeProject}
+      onLogout={() => {
+        localStorage.removeItem(tokenKey);
+        localStorage.removeItem(selectedProjectKey);
+        queryClient.clear();
+        setToken(null);
+      }}
+    />
+  );
+}
+
+function AuthScreen({ onAuth, expired = false }) {
+  const [mode, setMode] = useState('login');
+  const [form, setForm] = useState({
+    first_name: '',
+    last_name: '',
+    email: 'owner@crm.local',
+    password: 'demo123',
+    role: 'manager_owner',
+    company_name: '',
+  });
+  const [error, setError] = useState('');
+
+  async function submit(event) {
+    event.preventDefault();
+    setError('');
+    try {
+      const data = await api(mode === 'login' ? '/auth/login' : '/auth/register', { method: 'POST', body: form });
+      localStorage.setItem(tokenKey, data.token);
+      onAuth(data.token);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <section className="auth-card">
+        <div className="auth-brand">
+          <span><Gauge size={24} /></span>
+          <div>
+            <strong>Sales CRM</strong>
+            <p>Рабочая система для контроля продаж</p>
+          </div>
+        </div>
+
+        <div className="auth-tabs">
+          <button className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Вход</button>
+          <button className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>Регистрация</button>
+        </div>
+
+        {expired && <p className="notice">Сессия закончилась. Войдите снова.</p>}
+        {error && <p className="error">{error}</p>}
+
+        <form className="auth-form" onSubmit={submit}>
+          {mode === 'register' && (
+            <>
+              <div className="inline-fields">
+                <TextInput label="Имя" value={form.first_name} onChange={(first_name) => setForm({ ...form, first_name })} required />
+                <TextInput label="Фамилия" value={form.last_name} onChange={(last_name) => setForm({ ...form, last_name })} required />
+              </div>
+              <Select label="Роль" value={form.role} onChange={(role) => setForm({ ...form, role })} options={[
+                ['manager_owner', 'Управляющий'],
+                ['sales_manager', 'Менеджер'],
+              ]} />
+              {form.role === 'manager_owner' && (
+                <TextInput label="Компания" value={form.company_name} onChange={(company_name) => setForm({ ...form, company_name })} required />
+              )}
+            </>
+          )}
+          <TextInput label="Email" value={form.email} onChange={(email) => setForm({ ...form, email })} required />
+          <TextInput label="Пароль" type="password" value={form.password} onChange={(password) => setForm({ ...form, password })} required />
+          <button className="primary-button" type="submit">{mode === 'login' ? 'Войти' : 'Создать аккаунт'}</button>
+        </form>
+
+        <div className="demo-logins">
+          <button onClick={() => setForm({ ...form, email: 'owner@crm.local', password: 'demo123' })}>owner@crm.local</button>
+          <button onClick={() => setForm({ ...form, email: 'ivan@crm.local', password: 'demo123' })}>ivan@crm.local</button>
+          <button onClick={() => setForm({ ...form, email: 'anna@crm.local', password: 'demo123' })}>anna@crm.local</button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function CrmShell({ user, projects, projectId, onProjectChange, onLogout }) {
+  const queryClient = useQueryClient();
+  const [activeView, setActiveView] = useState('workspace');
+  const project = projects.find((item) => item.id === projectId);
+  const isOwner = user.role === 'manager_owner';
 
   return (
     <div className="app-shell">
@@ -65,97 +252,1058 @@ function App() {
           <div className="brand-mark"><Gauge size={22} /></div>
           <div>
             <strong>Sales CRM</strong>
-            <span>Отдел продаж</span>
+            <span>{isOwner ? 'Управляющий' : 'Менеджер продаж'}</span>
           </div>
         </div>
 
         <nav className="nav">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            return (
-              <button
-                key={tab.id}
-                className={activeTab === tab.id ? 'nav-item active' : 'nav-item'}
-                onClick={() => setActiveTab(tab.id)}
-                title={tab.label}
-              >
-                <Icon size={18} />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
+          <NavButton icon={BriefcaseBusiness} label="Рабочая область" active={activeView === 'workspace'} onClick={() => setActiveView('workspace')} />
+          {!isOwner && <NavButton icon={MessageSquareText} label="Чаты" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />}
+          <NavButton icon={BarChart3} label="Метрики" active={activeView === 'reports'} onClick={() => setActiveView('reports')} />
+          {isOwner && <NavButton icon={Settings} label="Настройки проекта" active={activeView === 'settings'} onClick={() => setActiveView('settings')} />}
         </nav>
+
+        {projectId && <SidebarDigest projectId={projectId} />}
       </aside>
 
       <main className="content">
         <header className="topbar">
           <div>
-            <p>CRM-система для отдела продаж</p>
-            <h1><ActiveIcon size={28} /> {tabs.find((tab) => tab.id === activeTab)?.label}</h1>
+            <p>{project?.company_name || 'Компания'} / {project?.name || 'Проект не выбран'}</p>
+            <h1>{activeView === 'workspace' ? 'Клиенты и воронка' : activeView === 'chats' ? 'Чаты клиентов' : activeView === 'reports' ? 'Отчеты и метрики' : 'Настройки проекта'}</h1>
           </div>
-          <div className="role-pill">Роль: руководитель</div>
+          <div className="topbar-actions">
+            <select value={projectId || ''} onChange={(event) => onProjectChange(Number(event.target.value))}>
+              {projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            <span className="role-pill">{user.name}</span>
+            <button className="icon-button ghost" title="Выйти" onClick={onLogout}><LogOut size={18} /></button>
+          </div>
         </header>
 
-        {activeTab === 'dashboard' && <Dashboard />}
-        {activeTab === 'leads' && <Leads />}
-        {activeTab === 'clients' && <Clients />}
-        {activeTab === 'deals' && <Deals />}
-        {activeTab === 'tasks' && <Tasks />}
-        {activeTab === 'reports' && <Reports />}
-        {activeTab === 'settings' && <SettingsPage />}
+        {!projectId && <EmptyState title="Нет проекта" text="Управляющий создает компанию и проект при регистрации." />}
+        {projectId && activeView === 'workspace' && <Workspace projectId={projectId} user={user} />}
+        {projectId && activeView === 'chats' && <Chats projectId={projectId} currentUser={user} />}
+        {projectId && activeView === 'reports' && <Reports projectId={projectId} user={user} />}
+        {projectId && activeView === 'settings' && (
+          <ProjectSettings
+            projectId={projectId}
+            project={project}
+            projects={projects}
+            onProjectCreated={(nextProjectId) => {
+              queryClient.invalidateQueries({ queryKey: ['me'] });
+              onProjectChange(nextProjectId);
+            }}
+            onProjectDeleted={(deletedProjectId) => {
+              const nextProject = projects.find((item) => item.id !== deletedProjectId);
+              queryClient.setQueriesData({ queryKey: ['me'] }, (old) => old ? {
+                ...old,
+                projects: (old.projects || []).filter((item) => item.id !== deletedProjectId),
+              } : old);
+              queryClient.invalidateQueries({ queryKey: ['me'] });
+              onProjectChange(nextProject?.id || null);
+            }}
+          />
+        )}
       </main>
     </div>
   );
 }
 
-function useReferenceData() {
-  const users = useQuery({ queryKey: ['users'], queryFn: () => api('/users') });
-  const stages = useQuery({ queryKey: ['stages'], queryFn: () => api('/stages') });
-  const clients = useQuery({ queryKey: ['clients'], queryFn: () => api('/clients') });
-  const deals = useQuery({ queryKey: ['deals'], queryFn: () => api('/deals') });
+function SidebarDigest({ projectId }) {
+  const dashboard = useQuery({
+    queryKey: ['sidebar-dashboard', projectId],
+    queryFn: () => api(`/dashboard?projectId=${projectId}`),
+    enabled: Boolean(projectId),
+    refetchInterval: liveRefreshMs,
+  });
+  const notifications = useQuery({
+    queryKey: ['notifications'],
+    queryFn: () => api('/notifications'),
+    enabled: Boolean(projectId),
+    refetchInterval: liveRefreshMs,
+  });
 
-  return {
-    users: users.data || [],
-    stages: stages.data || [],
-    clients: clients.data || [],
-    deals: deals.data || [],
-  };
-}
+  const allNotifications = notifications.data || [];
+  const upcoming = dashboard.data?.upcoming || [];
 
-function Dashboard() {
-  const { data, isLoading } = useQuery({ queryKey: ['dashboard'], queryFn: () => api('/dashboard') });
-
-  if (isLoading) return <Loading />;
+  if (dashboard.isLoading || notifications.isLoading || (!allNotifications.length && !upcoming.length)) return null;
 
   return (
-    <section className="stack">
-      <div className="metric-grid">
-        <Metric label="Активные лиды" value={data.stats.leads} tone="blue" />
-        <Metric label="Клиенты" value={data.stats.clients} tone="green" />
-        <Metric label="Открытые сделки" value={data.stats.openDeals} tone="amber" />
-        <Metric label="Просроченные задачи" value={data.stats.overdueTasks} tone="red" />
-        <Metric label="Прогноз продаж" value={money(data.stats.forecastAmount)} tone="violet" />
+    <div className="sidebar-digest">
+      <section className="sidebar-digest-block">
+        <div className="sidebar-digest-title">
+          <Bell size={15} />
+          <span>Уведомления</span>
+        </div>
+        <div className="sidebar-digest-scroll">
+          {allNotifications.length ? allNotifications.map((item) => (
+            <article key={item.id} className={item.is_read ? 'sidebar-digest-item muted' : 'sidebar-digest-item'}>
+              <strong>{item.title}</strong>
+              <span>{item.body}</span>
+            </article>
+          )) : <p className="sidebar-empty">Новых нет</p>}
+        </div>
+      </section>
+
+      <section className="sidebar-digest-block">
+        <div className="sidebar-digest-title">
+          <CalendarClock size={15} />
+          <span>Ближайшие</span>
+        </div>
+        <div className="sidebar-digest-scroll">
+          {upcoming.length ? upcoming.map((item) => (
+            <article key={item.id} className="sidebar-digest-item">
+              <strong>{item.title}</strong>
+              <span>{item.client_name} · {dateText(item.scheduled_at)}</span>
+            </article>
+          )) : <p className="sidebar-empty">План пуст</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+function Workspace({ projectId, user }) {
+  const [selectedClientId, setSelectedClientId] = useState(null);
+  const [query, setQuery] = useState('');
+  const dashboard = useQuery({ queryKey: ['dashboard', projectId], queryFn: () => api(`/dashboard?projectId=${projectId}`), refetchInterval: liveRefreshMs });
+  const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
+  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`), refetchInterval: liveRefreshMs });
+  const members = useQuery({
+    queryKey: ['members', projectId],
+    queryFn: () => api(`/projects/${projectId}/members`),
+    enabled: user.role === 'manager_owner',
+  });
+  const visibleClients = (clients.data || []).filter((client) => {
+    const haystack = `${client.name} ${client.short_description || ''} ${(client.tags || []).join(' ')} ${Object.values(client.contacts || {}).join(' ')}`.toLowerCase();
+    return haystack.includes(query.toLowerCase());
+  });
+  const selectedClient = selectedClientId ? visibleClients.find((client) => client.id === selectedClientId) : null;
+
+  if (dashboard.isLoading || stages.isLoading || clients.isLoading || (user.role === 'manager_owner' && members.isLoading)) return <Loading label="Загрузка рабочей области..." />;
+
+  return (
+    <section className="workspace-grid">
+      <div className="main-workspace">
+        <div className="metric-grid">
+          <Metric label="Клиенты" value={dashboard.data.stats.clients} />
+          <Metric label="Портфель" value={money(dashboard.data.stats.activeAmount)} tone="green" />
+          <Metric label="Переходы" value={dashboard.data.stats.transitions} tone="amber" />
+          <Metric label="Просрочено" value={dashboard.data.stats.overdueInteractions} tone="violet" />
+        </div>
+
+        <div className="toolbar">
+          <label className="search">
+            <Search size={17} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск по клиентам, тегам, контактам" />
+          </label>
+        </div>
+
+        <Kanban
+          projectId={projectId}
+          stages={stages.data}
+          clients={visibleClients}
+          managers={(members.data || []).filter((member) => member.role === 'sales_manager')}
+          canAssign={user.role === 'manager_owner'}
+          canDelete={user.role === 'manager_owner'}
+          onOpenClient={setSelectedClientId}
+        />
       </div>
 
-      <div className="two-columns">
-        <Panel title="Воронка продаж" action={<BriefcaseBusiness size={18} />}>
-          <Funnel stages={data.funnel} />
-        </Panel>
-        <Panel title="Ближайшие задачи" action={<ClipboardList size={18} />}>
-          <TaskList tasks={data.tasks} compact />
-        </Panel>
-      </div>
+      {selectedClient && (
+        <ClientDrawer
+          client={selectedClient}
+          projectId={projectId}
+          stages={stages.data}
+          currentUser={user}
+          onClose={() => setSelectedClientId(null)}
+        />
+      )}
+    </section>
+  );
+}
 
-      <Panel title="Последние коммуникации" action={<Mail size={18} />}>
-        <div className="activity-list">
-          {data.communications.map((item) => (
-            <div className="activity" key={item.id}>
-              <span className="type">{item.type}</span>
+function Kanban({ projectId, stages, clients, managers = [], canAssign = false, canDelete = false, onOpenClient }) {
+  const queryClient = useQueryClient();
+  const moveClient = useMutation({
+    mutationFn: ({ clientId, toStageId }) => api(`/clients/${clientId}/move-stage`, {
+      method: 'POST',
+      body: { to_stage_id: Number(toStageId), comment: 'Перемещено с Kanban-доски' },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+    },
+  });
+  const assignClient = useMutation({
+    mutationFn: ({ clientId, managerId }) => api(`/clients/${clientId}/assign`, {
+      method: 'POST',
+      body: { manager_id: Number(managerId) },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const deleteClient = useMutation({
+    mutationFn: (clientId) => api(`/clients/${clientId}`, { method: 'DELETE' }),
+    onSuccess: (_result, clientId) => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((client) => client.id !== clientId));
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+
+  return (
+    <div className="kanban">
+      {stages.map((stage) => {
+        const stageClients = clients.filter((client) => client.current_stage_id === stage.id);
+        return (
+          <section className="kanban-column" key={stage.id}>
+            <header>
               <div>
-                <strong>{item.client_name || item.deal_title || 'Контакт'}</strong>
-                <p>{item.summary}</p>
+                <h3>{stage.name}</h3>
+                <span style={{ color: stage.color }}>{money(stageClients.reduce((sum, client) => sum + Number(client.deal_amount || 0), 0))}</span>
               </div>
-              <time>{dateText(item.created_at)}</time>
+              <b>{stageClients.length}</b>
+            </header>
+            <div className="deal-stack">
+              {stageClients.map((client) => (
+                <article className="client-card" key={client.id}>
+                  <button className="card-open" onClick={() => onOpenClient(client.id)}>
+                    <div>
+                      <h4>{client.name}</h4>
+                      <p>{client.short_description || 'Описание не заполнено'}</p>
+                    </div>
+                    <ChevronRight size={18} />
+                  </button>
+                  <div className="tags">
+                    {(client.tags || []).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
+                  </div>
+                  <div className="card-meta">
+                    <strong>{money(client.deal_amount)}</strong>
+                    <span>{client.manager_name || 'Без менеджера'}</span>
+                  </div>
+                  <select
+                    aria-label="Этап клиента"
+                    value={client.current_stage_id || ''}
+                    onChange={(event) => moveClient.mutate({ clientId: client.id, toStageId: event.target.value })}
+                  >
+                    {stages.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                  </select>
+                  {canAssign && (
+                    <label className="card-select">
+                      <span>Менеджер</span>
+                      <select
+                        value={client.assigned_manager_id || ''}
+                        onChange={(event) => assignClient.mutate({ clientId: client.id, managerId: event.target.value })}
+                        disabled={!managers.length}
+                      >
+                        <option value="" disabled>Выберите менеджера</option>
+                        {managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {canDelete && (
+                    <button
+                      className="danger-button"
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Удалить клиента "${client.name}" навсегда?`)) {
+                          deleteClient.mutate(client.id);
+                        }
+                      }}
+                    >
+                      Удалить клиента
+                    </button>
+                  )}
+                </article>
+              ))}
+              {stageClients.length === 0 && <div className="empty-column">Нет клиентов</div>}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function Chats({ projectId, currentUser }) {
+  const queryClient = useQueryClient();
+  const [query, setQuery] = useState('');
+  const [selectedClientId, setSelectedClientId] = useState(null);
+  const [note, setNote] = useState('');
+  const [editingNote, setEditingNote] = useState({ id: null, message: '' });
+  const [clientForm, setClientForm] = useState({ name: '', short_description: '', tags: '', deal_amount: '' });
+  const [contactForm, setContactForm] = useState({ phone: '', email: '', telegram: '' });
+  const [eventForm, setEventForm] = useState({ title: '', type: 'call', scheduled_at: '', description: '' });
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(dateKey(new Date()));
+  const [savedAction, setSavedAction] = useState('');
+  const savedTimer = useRef(null);
+  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`), refetchInterval: liveRefreshMs });
+  const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
+
+  function markSaved(action, after) {
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    setSavedAction(action);
+    savedTimer.current = setTimeout(() => {
+      setSavedAction('');
+      after?.();
+    }, 850);
+  }
+
+  useEffect(() => () => {
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+  }, []);
+
+  const visibleClients = (clients.data || []).filter((client) => {
+    const haystack = `${client.name} ${client.short_description || ''} ${(client.tags || []).join(' ')} ${Object.values(client.contacts || {}).join(' ')}`.toLowerCase();
+    return haystack.includes(query.toLowerCase());
+  });
+  const selectedClient = (clients.data || []).find((client) => client.id === selectedClientId);
+  const activeClientId = selectedClient?.id;
+
+  useEffect(() => {
+    if (!selectedClient) return;
+    setClientForm({
+      name: selectedClient.name || '',
+      short_description: selectedClient.short_description || '',
+      tags: (selectedClient.tags || []).join(', '),
+      deal_amount: selectedClient.deal_amount ?? '',
+    });
+    setContactForm({
+      phone: selectedClient.contacts?.phone || '',
+      email: selectedClient.contacts?.email || '',
+      telegram: selectedClient.contacts?.telegram || '',
+    });
+  }, [selectedClientId, selectedClient]);
+
+  const notes = useQuery({
+    queryKey: ['notes', activeClientId],
+    queryFn: () => api(`/clients/${activeClientId}/notes`),
+    enabled: Boolean(activeClientId),
+  });
+  const interactions = useQuery({
+    queryKey: ['interactions', activeClientId],
+    queryFn: () => api(`/clients/${activeClientId}/interactions`),
+    enabled: Boolean(activeClientId),
+    refetchInterval: liveRefreshMs,
+  });
+
+  const addNote = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/notes`, {
+      method: 'POST',
+      body: { message: note, source: 'manual' },
+    }),
+    onSuccess: () => {
+      setNote('');
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const updateNote = useMutation({
+    mutationFn: () => api(`/notes/${editingNote.id}`, {
+      method: 'PATCH',
+      body: { message: editingNote.message },
+    }),
+    onSuccess: (updatedNote) => {
+      queryClient.setQueryData(['notes', activeClientId], (old = []) => old.map((item) => (
+        item.id === updatedNote.id ? { ...item, ...updatedNote } : item
+      )));
+      markSaved(`note-${updatedNote.id}`, () => setEditingNote({ id: null, message: '' }));
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const deleteNote = useMutation({
+    mutationFn: (noteId) => api(`/notes/${noteId}`, { method: 'DELETE' }),
+    onSuccess: (_result, noteId) => {
+      queryClient.setQueryData(['notes', activeClientId], (old = []) => old.filter((item) => item.id !== noteId));
+      setEditingNote({ id: null, message: '' });
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const moveStage = useMutation({
+    mutationFn: (stageId) => api(`/clients/${activeClientId}/move-stage`, {
+      method: 'POST',
+      body: { to_stage_id: Number(stageId), comment: 'Перемещено из чата' },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const updateClient = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}`, {
+      method: 'PATCH',
+      body: clientForm,
+    }),
+    onSuccess: (client) => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.map((item) => (item.id === client.id ? client : item)));
+      markSaved('client');
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const updateContacts = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/contacts`, {
+      method: 'PUT',
+      body: { contacts: contactForm },
+    }),
+    onSuccess: () => {
+      markSaved('contacts');
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const addInteraction = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/interactions`, { method: 'POST', body: eventForm }),
+    onSuccess: (interaction) => {
+      const key = dateKey(interaction.scheduled_at);
+      if (key) {
+        setCalendarMonth(key.slice(0, 7));
+        setSelectedCalendarDay(key);
+      }
+      setEventForm({ title: '', type: 'call', scheduled_at: '', description: '' });
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+    },
+  });
+  const deleteInteraction = useMutation({
+    mutationFn: (interactionId) => api(`/interactions/${interactionId}`, { method: 'DELETE' }),
+    onSuccess: (_result, interactionId) => {
+      queryClient.setQueryData(['interactions', activeClientId], (old = []) => old.filter((item) => item.id !== interactionId));
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const completeInteraction = useMutation({
+    mutationFn: (interactionId) => api(`/interactions/${interactionId}/complete`, { method: 'POST' }),
+    onSuccess: (updatedInteraction) => {
+      queryClient.setQueryData(['interactions', activeClientId], (old = []) => old.map((item) => (
+        item.id === updatedInteraction.id ? { ...item, ...updatedInteraction } : item
+      )));
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+
+  const timeline = useMemo(() => {
+    const noteItems = (notes.data || []).map((item) => ({
+      id: `note-${item.id}`,
+      noteId: item.id,
+      kind: 'note',
+      text: item.message,
+      date: item.created_at,
+      managerId: item.manager_id,
+      canEdit: Number(item.manager_id) === Number(currentUser.id),
+    }));
+    const interactionItems = (interactions.data || []).map((item) => ({
+      id: `interaction-${item.id}`,
+      kind: 'interaction',
+      text: item.description || item.title,
+      date: item.completed_at || item.scheduled_at,
+    }));
+    return [...noteItems, ...interactionItems].sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [notes.data, interactions.data, currentUser.id]);
+
+  const groupedTimeline = useMemo(() => timeline.reduce((groups, item) => {
+    const date = dateGroupText(item.date);
+    const lastGroup = groups[groups.length - 1];
+    if (!lastGroup || lastGroup.date !== date) groups.push({ date, items: [item] });
+    else lastGroup.items.push(item);
+    return groups;
+  }, []), [timeline]);
+
+  const calendarGroups = useMemo(() => (interactions.data || []).reduce((groups, item) => {
+    const date = dateKey(item.scheduled_at);
+    groups[date] = [...(groups[date] || []), item];
+    return groups;
+  }, {}), [interactions.data]);
+  const calendarDays = useMemo(() => buildCalendarDays(calendarMonth), [calendarMonth]);
+  const selectedDayEvents = calendarGroups[selectedCalendarDay] || [];
+
+  if (clients.isLoading || stages.isLoading) return <Loading label="Загрузка чатов..." />;
+
+  if (!selectedClient) {
+    return (
+      <section className="chat-picker">
+        <div className="toolbar">
+          <label className="search">
+            <Search size={17} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти клиента" />
+          </label>
+        </div>
+        <div className="chat-picker-grid">
+          {visibleClients.map((client) => (
+            <button className="chat-picker-card" key={client.id} onClick={() => setSelectedClientId(client.id)}>
+              <div>
+                <strong>{client.name}</strong>
+                <span>{client.stage_name || 'Без этапа'} · {client.manager_name || currentUser.name}</span>
+              </div>
+              <ChevronRight size={18} />
+            </button>
+          ))}
+          {visibleClients.length === 0 && <EmptyState title="Клиенты не найдены" text="Попробуйте изменить поисковый запрос." />}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="chat-detail-layout">
+      <section className="chat-history-panel">
+        <header className="chat-header">
+          <div>
+            <button className="back-link" type="button" onClick={() => setSelectedClientId(null)}>← Все клиенты</button>
+            <span>{selectedClient.stage_name || 'Клиент'}</span>
+            <h2>{selectedClient.name}</h2>
+            <p>{selectedClient.short_description || 'История сообщений и заметок по клиенту.'}</p>
+          </div>
+          <strong>{money(selectedClient.deal_amount)}</strong>
+        </header>
+
+        <div className="chat-timeline">
+          {groupedTimeline.map((group) => (
+            <section className="chat-date-group" key={group.date}>
+              <div className="chat-date-separator">{group.date}</div>
+              {group.items.map((item) => (
+                <article className="chat-message" key={item.id}>
+                  <div>
+                    {editingNote.id === item.noteId ? (
+                      <form className="message-edit-form" onSubmit={(event) => {
+                        event.preventDefault();
+                        updateNote.mutate();
+                      }}>
+                        <textarea value={editingNote.message} onChange={(event) => setEditingNote({ ...editingNote, message: event.target.value })} required />
+                        <div className="message-actions">
+                          <button className="secondary-button" type="button" onClick={() => setEditingNote({ id: null, message: '' })}>Отмена</button>
+                          <button className={savedAction === `note-${item.noteId}` ? 'primary-button saved' : 'primary-button'} type="submit">
+                            {savedAction === `note-${item.noteId}` ? 'Сохранено' : 'Сохранить'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <p>{item.text}</p>
+                        <footer className="message-footer">
+                          <time>{timeText(item.date)}</time>
+                          {item.canEdit && (
+                            <span className="message-actions">
+                              <button className="text-button" type="button" onClick={() => setEditingNote({ id: item.noteId, message: item.text })}>Ред..</button>
+                              <button className="text-button danger" type="button" onClick={() => deleteNote.mutate(item.noteId)}>Удалить</button>
+                            </span>
+                          )}
+                        </footer>
+                      </>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </section>
+          ))}
+          {timeline.length === 0 && <EmptyState title="История пуста" text="Добавьте первую заметку по клиенту." />}
+        </div>
+
+        <form className="chat-compose" onSubmit={(event) => {
+          event.preventDefault();
+          addNote.mutate();
+        }}>
+          <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Новая заметка или сообщение по клиенту" required />
+          <button className="primary-button" type="submit">Добавить в историю</button>
+        </form>
+      </section>
+
+      <aside className="chat-side-panel">
+        <Panel title="Клиент" icon={UsersRound}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            updateClient.mutate();
+          }}>
+            <TextInput label="Название клиента" value={clientForm.name} onChange={(name) => setClientForm({ ...clientForm, name })} required />
+            <TextInput label="Короткое описание" value={clientForm.short_description} onChange={(short_description) => setClientForm({ ...clientForm, short_description })} />
+            <div className="inline-fields">
+              <TextInput label="Теги" value={clientForm.tags} onChange={(tags) => setClientForm({ ...clientForm, tags })} />
+              <TextInput label="Сумма" type="number" value={clientForm.deal_amount} onChange={(deal_amount) => setClientForm({ ...clientForm, deal_amount })} />
+            </div>
+            <button className={savedAction === 'client' ? 'secondary-button saved' : 'secondary-button'} type="submit">
+              {savedAction === 'client' ? 'Сохранено' : 'Сохранить клиента'}
+            </button>
+          </form>
+        </Panel>
+
+        <Panel title="Этап" icon={BriefcaseBusiness}>
+          <Select
+            label="Этап воронки"
+            value={selectedClient.current_stage_id || ''}
+            onChange={(stageId) => moveStage.mutate(stageId)}
+            options={(stages.data || []).map((stage) => [String(stage.id), stage.name])}
+          />
+        </Panel>
+
+        <Panel title="Контакты" icon={UsersRound}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            updateContacts.mutate();
+          }}>
+            <TextInput label="Телефон" value={contactForm.phone} onChange={(phone) => setContactForm({ ...contactForm, phone })} />
+            <TextInput label="Email" value={contactForm.email} onChange={(email) => setContactForm({ ...contactForm, email })} />
+            <TextInput label="Telegram" value={contactForm.telegram} onChange={(telegram) => setContactForm({ ...contactForm, telegram })} />
+            <button className={savedAction === 'contacts' ? 'secondary-button saved' : 'secondary-button'} type="submit">
+              {savedAction === 'contacts' ? 'Сохранено' : 'Сохранить контакты'}
+            </button>
+          </form>
+        </Panel>
+
+        <Panel title="Новое событие" icon={CalendarClock}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            addInteraction.mutate();
+          }}>
+            <TextInput label="Название" value={eventForm.title} onChange={(title) => setEventForm({ ...eventForm, title })} required />
+            <Select label="Тип" value={eventForm.type} onChange={(type) => setEventForm({ ...eventForm, type })} options={[
+              ['call', 'Звонок'],
+              ['meeting', 'Встреча'],
+              ['message', 'Сообщение'],
+              ['email', 'Email'],
+            ]} />
+            <TextInput label="Дата и время" type="datetime-local" value={eventForm.scheduled_at} onChange={(scheduled_at) => setEventForm({ ...eventForm, scheduled_at })} required />
+            <TextInput label="Описание" value={eventForm.description} onChange={(description) => setEventForm({ ...eventForm, description })} />
+            <button className="primary-button" type="submit">Создать событие</button>
+          </form>
+        </Panel>
+
+        <Panel title="Календарь" icon={CalendarClock}>
+          <div className="calendar-widget">
+            <div className="calendar-toolbar">
+              <button type="button" className="icon-button ghost" onClick={() => {
+                const date = new Date(`${calendarMonth}-01T00:00`);
+                date.setMonth(date.getMonth() - 1);
+                setCalendarMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+              }}>‹</button>
+              <strong>{monthTitle(calendarMonth)}</strong>
+              <button type="button" className="icon-button ghost" onClick={() => {
+                const date = new Date(`${calendarMonth}-01T00:00`);
+                date.setMonth(date.getMonth() + 1);
+                setCalendarMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+              }}>›</button>
+            </div>
+            <div className="calendar-weekdays">
+              {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((day) => <span key={day}>{day}</span>)}
+            </div>
+            <div className="calendar-month-grid">
+              {calendarDays.map((day, index) => day ? (
+                <button
+                  type="button"
+                  key={day.key}
+                  className={[
+                    'calendar-cell',
+                    calendarGroups[day.key]?.length ? 'has-events' : '',
+                    selectedCalendarDay === day.key ? 'active' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => setSelectedCalendarDay(day.key)}
+                >
+                  <span>{day.day}</span>
+                  {calendarGroups[day.key]?.length ? <b>{calendarGroups[day.key].length}</b> : null}
+                </button>
+              ) : <span className="calendar-cell empty" key={`empty-${index}`} />)}
+            </div>
+            <div className="calendar-list">
+              {selectedDayEvents.map((item) => (
+                <article className="calendar-event" key={item.id}>
+                  <div>
+                    <time>{timeText(item.scheduled_at)}</time>
+                    <span>{item.title} · {interactionStatusText(item)}</span>
+                  </div>
+                  <span className="message-actions">
+                    {item.status === 'planned' && !isInteractionOverdue(item) && (
+                      <button className="text-button" type="button" onClick={() => completeInteraction.mutate(item.id)}>Выполнено</button>
+                    )}
+                    <button className="text-button danger" type="button" onClick={() => deleteInteraction.mutate(item.id)}>Удалить</button>
+                  </span>
+                </article>
+              ))}
+              {selectedDayEvents.length === 0 && <p className="sidebar-empty">На выбранный день событий нет</p>}
+            </div>
+          </div>
+        </Panel>
+      </aside>
+    </section>
+  );
+}
+function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
+  const queryClient = useQueryClient();
+  const notes = useQuery({ queryKey: ['notes', client.id], queryFn: () => api(`/clients/${client.id}/notes`) });
+  const interactions = useQuery({ queryKey: ['interactions', client.id], queryFn: () => api(`/clients/${client.id}/interactions`) });
+  const [note, setNote] = useState('');
+  const [eventForm, setEventForm] = useState({ title: '', type: 'call', scheduled_at: '' });
+
+  const addNote = useMutation({
+    mutationFn: () => api(`/clients/${client.id}/notes`, { method: 'POST', body: { message: note, source: 'manual' } }),
+    onSuccess: () => {
+      setNote('');
+      queryClient.invalidateQueries({ queryKey: ['notes', client.id] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const addInteraction = useMutation({
+    mutationFn: () => api(`/clients/${client.id}/interactions`, { method: 'POST', body: eventForm }),
+    onSuccess: () => {
+      setEventForm({ title: '', type: 'call', scheduled_at: '' });
+      queryClient.invalidateQueries({ queryKey: ['interactions', client.id] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+    },
+  });
+  const completeInteraction = useMutation({
+    mutationFn: (id) => api(`/interactions/${id}/complete`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['interactions', client.id] }),
+  });
+  const deleteClient = useMutation({
+    mutationFn: () => api(`/clients/${client.id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((item) => item.id !== client.id));
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      onClose();
+    },
+  });
+
+  return (
+    <div className="drawer-backdrop" onMouseDown={onClose}>
+      <aside className="drawer" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="drawer-header">
+          <div>
+            <span>{client.stage_name}</span>
+            <h2>{client.name}</h2>
+            <p>{client.short_description}</p>
+          </div>
+          <div className="drawer-actions">
+            {currentUser.role === 'manager_owner' && (
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Удалить клиента "${client.name}" навсегда?`)) {
+                    deleteClient.mutate();
+                  }
+                }}
+              >
+                Удалить клиента
+              </button>
+            )}
+            <button className="icon-button ghost" onClick={onClose}>×</button>
+          </div>
+        </header>
+
+        <section className="client-summary">
+          <div><span>Сумма</span><strong>{money(client.deal_amount)}</strong></div>
+          <div><span>Менеджер</span><strong>{client.manager_name || currentUser.name}</strong></div>
+          <div><span>Телефон</span><strong>{client.contacts?.phone || 'Не указан'}</strong></div>
+          <div><span>Email</span><strong>{client.contacts?.email || 'Не указан'}</strong></div>
+        </section>
+
+        <Panel title="Записная книжка" icon={MessageSquareText}>
+          <div className="note-list">
+            {(notes.data || []).map((item) => (
+              <article className="note-bubble" key={item.id}>
+                <p>{item.message}</p>
+                <span>{item.manager_name || currentUser.name} · {dateText(item.created_at)} · {item.source}</span>
+              </article>
+            ))}
+          </div>
+          <form className="note-form" onSubmit={(event) => {
+            event.preventDefault();
+            addNote.mutate();
+          }}>
+            <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Новая заметка по клиенту" required />
+            <button className="primary-button" type="submit">Добавить заметку</button>
+          </form>
+        </Panel>
+
+        <Panel title="События" icon={CalendarClock}>
+          <div className="rail-list">
+            {(interactions.data || []).map((item) => (
+              <article className="interaction-row" key={item.id}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.type} · {dateText(item.scheduled_at)} · {interactionStatusText(item)}</span>
+                </div>
+                {item.status === 'planned' && !isInteractionOverdue(item) && (
+                  <button className="icon-button" title="Выполнено" onClick={() => completeInteraction.mutate(item.id)}>
+                    <CheckCircle2 size={18} />
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+          <form className="event-form" onSubmit={(event) => {
+            event.preventDefault();
+            addInteraction.mutate();
+          }}>
+            <TextInput label="Событие" value={eventForm.title} onChange={(title) => setEventForm({ ...eventForm, title })} required />
+            <div className="inline-fields">
+              <Select label="Тип" value={eventForm.type} onChange={(type) => setEventForm({ ...eventForm, type })} options={[
+                ['call', 'Звонок'],
+                ['meeting', 'Встреча'],
+                ['message', 'Сообщение'],
+                ['email', 'Email'],
+              ]} />
+              <TextInput label="Когда" type="datetime-local" value={eventForm.scheduled_at} onChange={(scheduled_at) => setEventForm({ ...eventForm, scheduled_at })} required />
+            </div>
+            <button className="secondary-button" type="submit">Запланировать</button>
+          </form>
+        </Panel>
+      </aside>
+    </div>
+  );
+}
+
+function ProjectSettings({ projectId, project, projects = [], onProjectCreated, onProjectDeleted }) {
+  const queryClient = useQueryClient();
+  const members = useQuery({ queryKey: ['members', projectId], queryFn: () => api(`/projects/${projectId}/members`) });
+  const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
+  const [projectForm, setProjectForm] = useState({ name: '', description: '' });
+  const [memberForm, setMemberForm] = useState({ first_name: '', last_name: '', email: '' });
+  const [clientForm, setClientForm] = useState({
+    name: '',
+    short_description: '',
+    phone: '',
+    email: '',
+    tags: '',
+    deal_amount: '',
+    assigned_manager_id: '',
+  });
+  const [stageName, setStageName] = useState('');
+
+  const managers = (members.data || []).filter((member) => member.role === 'sales_manager');
+  const firstStageId = stages.data?.[0]?.id;
+
+  const createProject = useMutation({
+    mutationFn: () => api('/projects', { method: 'POST', body: projectForm }),
+    onSuccess: (project) => {
+      setProjectForm({ name: '', description: '' });
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      onProjectCreated?.(project.id);
+    },
+  });
+  const deleteProject = useMutation({
+    mutationFn: () => api(`/projects/${projectId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['members', projectId] });
+      queryClient.removeQueries({ queryKey: ['stages', projectId] });
+      queryClient.removeQueries({ queryKey: ['clients', projectId] });
+      queryClient.removeQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.removeQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.removeQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      onProjectDeleted?.(projectId);
+    },
+  });
+  const addMember = useMutation({
+    mutationFn: () => api(`/projects/${projectId}/members`, { method: 'POST', body: memberForm }),
+    onSuccess: () => {
+      setMemberForm({ first_name: '', last_name: '', email: '' });
+      queryClient.invalidateQueries({ queryKey: ['members', projectId] });
+    },
+  });
+  const deleteMember = useMutation({
+    mutationFn: (memberId) => api(`/projects/${projectId}/members/${memberId}`, { method: 'DELETE' }),
+    onSuccess: (_result, memberId) => {
+      queryClient.setQueryData(['members', projectId], (old = []) => old.filter((member) => member.id !== memberId));
+      queryClient.invalidateQueries({ queryKey: ['members', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const addClient = useMutation({
+    mutationFn: () => api(`/projects/${projectId}/clients`, {
+      method: 'POST',
+      body: {
+        name: clientForm.name,
+        short_description: clientForm.short_description,
+        assigned_manager_id: clientForm.assigned_manager_id ? Number(clientForm.assigned_manager_id) : null,
+        current_stage_id: firstStageId,
+        deal_amount: Number(clientForm.deal_amount || 0),
+        contacts: { phone: clientForm.phone, email: clientForm.email },
+        tags: clientForm.tags,
+      },
+    }),
+    onSuccess: () => {
+      setClientForm({ name: '', short_description: '', phone: '', email: '', tags: '', deal_amount: '', assigned_manager_id: '' });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+    },
+  });
+  const addStage = useMutation({
+    mutationFn: () => api(`/projects/${projectId}/pipeline-stages`, { method: 'POST', body: { name: stageName } }),
+    onSuccess: (stage) => {
+      setStageName('');
+      queryClient.setQueryData(['stages', projectId], (old = []) => {
+        const next = old.some((item) => item.id === stage.id) ? old : [...old, stage];
+        return [...next].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      });
+      queryClient.invalidateQueries({ queryKey: ['stages', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const deleteStage = useMutation({
+    mutationFn: (stageId) => api(`/projects/${projectId}/pipeline-stages/${stageId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['stages', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+
+  if (members.isLoading || stages.isLoading) return <Loading label="Загрузка настроек..." />;
+
+  return (
+    <section className="settings-grid">
+      <Panel title="Новый проект" icon={BriefcaseBusiness}>
+        <form className="stack-form" onSubmit={(event) => {
+          event.preventDefault();
+          createProject.mutate();
+        }}>
+          <TextInput label="Название проекта" value={projectForm.name} onChange={(name) => setProjectForm({ ...projectForm, name })} required />
+          <TextInput label="Описание" value={projectForm.description} onChange={(description) => setProjectForm({ ...projectForm, description })} />
+          <button className="primary-button" type="submit"><Plus size={18} /> Создать проект</button>
+          <p className="hint">Проект сразу получит базовую воронку: лид, интерес, квалификация, переговоры, сделка, отказ.</p>
+        </form>
+      </Panel>
+
+      <Panel title="Удаление проекта" icon={Settings}>
+        <div className="stack-form">
+          <p className="hint">
+            Проект “{project?.name || 'текущий проект'}” будет удален вместе с клиентами, этапами, заметками, событиями и отчетной историей.
+          </p>
+          <button
+            className="danger-button"
+            type="button"
+            disabled={deleteProject.isPending}
+            onClick={() => {
+              const projectName = project?.name || 'текущий проект';
+              if (window.confirm(`Удалить проект "${projectName}" навсегда? Это действие нельзя отменить.`)) {
+                deleteProject.mutate();
+              }
+            }}
+          >
+            {deleteProject.isPending ? 'Удаление...' : 'Удалить проект'}
+          </button>
+          {projects.length <= 1 && <p className="hint">Это последний доступный проект. После удаления рабочая область станет пустой.</p>}
+        </div>
+      </Panel>
+
+      <Panel title="Менеджеры проекта" icon={UserPlus}>
+        <form className="stack-form" onSubmit={(event) => {
+          event.preventDefault();
+          addMember.mutate();
+        }}>
+          <div className="inline-fields">
+            <TextInput label="Имя" value={memberForm.first_name} onChange={(first_name) => setMemberForm({ ...memberForm, first_name })} />
+            <TextInput label="Фамилия" value={memberForm.last_name} onChange={(last_name) => setMemberForm({ ...memberForm, last_name })} />
+          </div>
+          <TextInput label="Email" value={memberForm.email} onChange={(email) => setMemberForm({ ...memberForm, email })} required />
+          <button className="primary-button" type="submit"><Plus size={18} /> Добавить менеджера</button>
+          <p className="hint">Если менеджера нет, он будет создан с паролем demo123.</p>
+        </form>
+        <div className="settings-list">
+          {members.data.map((member) => (
+            <div className="stage-row" key={member.id}>
+              <div>
+                <strong>{member.name}</strong>
+                <span>{member.email} · {member.role === 'manager_owner' ? 'управляющий' : 'менеджер'}</span>
+              </div>
+              {member.role === 'sales_manager' && (
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`Удалить менеджера "${member.name}" из проекта? Его клиенты останутся без назначенного менеджера.`)) {
+                      deleteMember.mutate(member.id);
+                    }
+                  }}
+                >
+                  Удалить
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel title="Новый клиент" icon={UsersRound}>
+        <form className="stack-form" onSubmit={(event) => {
+          event.preventDefault();
+          addClient.mutate();
+        }}>
+          <TextInput label="Клиент" value={clientForm.name} onChange={(name) => setClientForm({ ...clientForm, name })} required />
+          <TextInput label="Короткое описание" value={clientForm.short_description} onChange={(short_description) => setClientForm({ ...clientForm, short_description })} />
+          <div className="inline-fields">
+            <TextInput label="Телефон" value={clientForm.phone} onChange={(phone) => setClientForm({ ...clientForm, phone })} />
+            <TextInput label="Email" value={clientForm.email} onChange={(email) => setClientForm({ ...clientForm, email })} />
+          </div>
+          <div className="inline-fields">
+            <TextInput label="Теги" value={clientForm.tags} onChange={(tags) => setClientForm({ ...clientForm, tags })} />
+            <TextInput label="Сумма" type="number" value={clientForm.deal_amount} onChange={(deal_amount) => setClientForm({ ...clientForm, deal_amount })} />
+          </div>
+          <Select label="Назначить" value={clientForm.assigned_manager_id} onChange={(assigned_manager_id) => setClientForm({ ...clientForm, assigned_manager_id })} options={[
+            ['', 'Без менеджера'],
+            ...managers.map((manager) => [manager.id, manager.name]),
+          ]} />
+          <button className="primary-button" type="submit"><Plus size={18} /> Создать клиента</button>
+        </form>
+      </Panel>
+
+      <Panel title="Этапы воронки" icon={Settings}>
+        <form className="inline-form" onSubmit={(event) => {
+          event.preventDefault();
+          addStage.mutate();
+        }}>
+          <TextInput label="Название этапа" value={stageName} onChange={setStageName} required />
+          <button className="secondary-button" type="submit">Добавить</button>
+        </form>
+        <div className="settings-list">
+          {stages.data.map((stage) => (
+            <div className="stage-row" key={stage.id}>
+              <div>
+                <strong>{stage.position}. {stage.name}</strong>
+                <span>Максимум без активности: {stage.max_days_without_activity} дней</span>
+              </div>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => deleteStage.mutate(stage.id)}
+                title="Удалить этап можно только если на нем нет клиентов"
+              >
+                Удалить
+              </button>
             </div>
           ))}
         </div>
@@ -164,396 +1312,98 @@ function Dashboard() {
   );
 }
 
-function Leads() {
-  const queryClient = useQueryClient();
-  const { users } = useReferenceData();
-  const { data = [], isLoading } = useQuery({ queryKey: ['leads'], queryFn: () => api('/leads') });
-  const [form, setForm] = useState({
-    name: '',
-    company: '',
-    phone: '',
-    email: '',
-    source: 'web',
-    product: '',
-    manager_id: '',
-    notes: '',
+function Reports({ projectId, user }) {
+  const [period, setPeriod] = useState({ from: '', to: '' });
+  const reportParams = new URLSearchParams();
+  if (period.from) reportParams.set('from', period.from);
+  if (period.to) reportParams.set('to', period.to);
+  const reportQuery = reportParams.toString();
+  const reportPath = `/reports/project/${projectId}${reportQuery ? `?${reportQuery}` : ''}`;
+  const report = useQuery({
+    queryKey: ['report', projectId, period.from, period.to],
+    queryFn: () => api(reportPath),
   });
+  if (report.isLoading) return <Loading label="Считаю метрики..." />;
+  const isOwner = user.role === 'manager_owner';
 
-  const createLead = useMutation({
-    mutationFn: (body) => api('/leads', { method: 'POST', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['leads'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      setForm({ name: '', company: '', phone: '', email: '', source: 'web', product: '', manager_id: '', notes: '' });
-    },
-  });
-
-  const patchLead = useMutation({
-    mutationFn: ({ id, body }) => api(`/leads/${id}`, { method: 'PATCH', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['leads'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-    },
-  });
-
-  const convertLead = useMutation({
-    mutationFn: (lead) => api(`/leads/${lead.id}/convert`, {
-      method: 'POST',
-      body: { amount: 100000, title: `Сделка: ${lead.company || lead.name}` },
-    }),
-    onSuccess: () => {
-      ['leads', 'clients', 'deals', 'dashboard', 'reports'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
-    },
-  });
-
-  if (isLoading) return <Loading />;
+  async function downloadCsv() {
+    const token = localStorage.getItem(tokenKey);
+    const response = await fetch(`/api/reports/project/${projectId}/download${reportQuery ? `?${reportQuery}` : ''}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `project-${projectId}-report.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
 
   return (
     <section className="stack">
-      <Panel title="Регистрация входящей заявки" action={<Plus size={18} />}>
-        <form className="form-grid" onSubmit={(event) => {
-          event.preventDefault();
-          createLead.mutate({ ...form, manager_id: form.manager_id || null });
-        }}>
-          <TextInput label="Имя" value={form.name} onChange={(name) => setForm({ ...form, name })} required />
-          <TextInput label="Компания" value={form.company} onChange={(company) => setForm({ ...form, company })} />
-          <TextInput label="Телефон" value={form.phone} onChange={(phone) => setForm({ ...form, phone })} />
-          <TextInput label="Email" value={form.email} onChange={(email) => setForm({ ...form, email })} />
-          <Select label="Источник" value={form.source} onChange={(source) => setForm({ ...form, source })} options={[
-            ['web', 'Сайт'],
-            ['email', 'Email'],
-            ['phone', 'Звонок'],
-            ['referral', 'Рекомендация'],
-          ]} />
-          <TextInput label="Продукт" value={form.product} onChange={(product) => setForm({ ...form, product })} />
-          <Select label="Менеджер" value={form.manager_id} onChange={(manager_id) => setForm({ ...form, manager_id })} options={[
-            ['', 'Не назначен'],
-            ...users.filter((user) => user.role === 'manager').map((user) => [user.id, user.name]),
-          ]} />
-          <TextInput label="Комментарий" value={form.notes} onChange={(notes) => setForm({ ...form, notes })} />
-          <button className="primary-button" type="submit"><Plus size={18} /> Добавить лид</button>
-        </form>
-      </Panel>
-
-      <div className="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>Лид</th>
-              <th>Контакты</th>
-              <th>Источник</th>
-              <th>Статус</th>
-              <th>Менеджер</th>
-              <th>Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((lead) => (
-              <tr key={lead.id}>
-                <td>
-                  <strong>{lead.name}</strong>
-                  <span>{lead.company || lead.product || 'Без компании'}</span>
-                </td>
-                <td>
-                  <span><Phone size={14} /> {lead.phone || 'нет телефона'}</span>
-                  <span><Mail size={14} /> {lead.email || 'нет email'}</span>
-                </td>
-                <td>{lead.source}</td>
-                <td><Status value={lead.status} /></td>
-                <td>{lead.manager_name || 'Не назначен'}</td>
-                <td className="actions">
-                  {lead.status !== 'converted' && (
-                    <>
-                      <button onClick={() => patchLead.mutate({ id: lead.id, body: { status: 'qualified' } })}>Квалифицировать</button>
-                      <button onClick={() => convertLead.mutate(lead)}>В сделку</button>
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="report-actions">
+        <TextInput label="С" type="date" value={period.from} onChange={(from) => setPeriod({ ...period, from })} />
+        <TextInput label="По" type="date" value={period.to} onChange={(to) => setPeriod({ ...period, to })} />
+        <button className="primary-button" type="button" onClick={() => report.refetch()}>Сформировать отчёт</button>
+        <button className="secondary-button" type="button" onClick={() => setPeriod({ from: '', to: '' })}>Всё время</button>
+        <button className="secondary-button" type="button" onClick={downloadCsv}><Download size={17} /> Скачать CSV</button>
       </div>
-    </section>
-  );
-}
-
-function Clients() {
-  const queryClient = useQueryClient();
-  const { data = [], isLoading } = useQuery({ queryKey: ['clients'], queryFn: () => api('/clients') });
-  const [form, setForm] = useState({ name: '', company: '', phone: '', email: '', source: 'manual', notes: '' });
-  const createClient = useMutation({
-    mutationFn: (body) => api('/clients', { method: 'POST', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['clients'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      setForm({ name: '', company: '', phone: '', email: '', source: 'manual', notes: '' });
-    },
-  });
-
-  if (isLoading) return <Loading />;
-
-  return (
-    <section className="stack">
-      <Panel title="Клиентская база" action={<UsersRound size={18} />}>
-        <form className="form-grid" onSubmit={(event) => {
-          event.preventDefault();
-          createClient.mutate(form);
-        }}>
-          <TextInput label="Имя" value={form.name} onChange={(name) => setForm({ ...form, name })} required />
-          <TextInput label="Компания" value={form.company} onChange={(company) => setForm({ ...form, company })} />
-          <TextInput label="Телефон" value={form.phone} onChange={(phone) => setForm({ ...form, phone })} />
-          <TextInput label="Email" value={form.email} onChange={(email) => setForm({ ...form, email })} />
-          <TextInput label="Комментарий" value={form.notes} onChange={(notes) => setForm({ ...form, notes })} />
-          <button className="primary-button" type="submit"><Plus size={18} /> Добавить клиента</button>
-        </form>
-      </Panel>
-
-      <div className="cards-grid">
-        {data.map((client) => (
-          <article className="entity-card" key={client.id}>
-            <div className="entity-head">
-              <div>
-                <h3>{client.name}</h3>
-                <p>{client.company || 'Частный клиент'}</p>
-              </div>
-              <span>{client.deals_count} сделок</span>
-            </div>
-            <div className="entity-details">
-              <span><Phone size={15} /> {client.phone || 'Телефон не указан'}</span>
-              <span><Mail size={15} /> {client.email || 'Email не указан'}</span>
-              <strong>{money(client.total_amount)}</strong>
-            </div>
-            <p>{client.notes || 'История клиента пока не заполнена.'}</p>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function Deals() {
-  const queryClient = useQueryClient();
-  const { users, stages, clients } = useReferenceData();
-  const { data = [], isLoading } = useQuery({ queryKey: ['deals'], queryFn: () => api('/deals') });
-  const [form, setForm] = useState({
-    title: '',
-    client_id: '',
-    manager_id: '',
-    stage_id: '',
-    amount: '',
-    probability: 35,
-    close_date: '',
-    notes: '',
-  });
-
-  const createDeal = useMutation({
-    mutationFn: (body) => api('/deals', { method: 'POST', body }),
-    onSuccess: () => {
-      ['deals', 'dashboard', 'reports', 'clients'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
-      setForm({ title: '', client_id: '', manager_id: '', stage_id: '', amount: '', probability: 35, close_date: '', notes: '' });
-    },
-  });
-
-  const patchDeal = useMutation({
-    mutationFn: ({ id, body }) => api(`/deals/${id}`, { method: 'PATCH', body }),
-    onSuccess: () => {
-      ['deals', 'dashboard', 'reports', 'clients'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
-    },
-  });
-
-  const grouped = useMemo(() => stages.map((stage) => ({
-    ...stage,
-    deals: data.filter((deal) => deal.stage_id === stage.id && deal.status === 'open'),
-  })), [stages, data]);
-
-  if (isLoading) return <Loading />;
-
-  return (
-    <section className="stack">
-      <Panel title="Новая сделка" action={<Plus size={18} />}>
-        <form className="form-grid" onSubmit={(event) => {
-          event.preventDefault();
-          createDeal.mutate({
-            ...form,
-            client_id: Number(form.client_id),
-            manager_id: form.manager_id ? Number(form.manager_id) : null,
-            stage_id: Number(form.stage_id),
-            amount: Number(form.amount || 0),
-            probability: Number(form.probability || 10),
-          });
-        }}>
-          <TextInput label="Название" value={form.title} onChange={(title) => setForm({ ...form, title })} required />
-          <Select label="Клиент" value={form.client_id} onChange={(client_id) => setForm({ ...form, client_id })} options={[
-            ['', 'Выберите клиента'],
-            ...clients.map((client) => [client.id, `${client.name} (${client.company || 'без компании'})`]),
-          ]} />
-          <Select label="Этап" value={form.stage_id} onChange={(stage_id) => {
-            const stage = stages.find((item) => String(item.id) === String(stage_id));
-            setForm({ ...form, stage_id, probability: stage?.probability || form.probability });
-          }} options={[
-            ['', 'Выберите этап'],
-            ...stages.map((stage) => [stage.id, stage.name]),
-          ]} />
-          <Select label="Менеджер" value={form.manager_id} onChange={(manager_id) => setForm({ ...form, manager_id })} options={[
-            ['', 'Не назначен'],
-            ...users.filter((user) => user.role === 'manager').map((user) => [user.id, user.name]),
-          ]} />
-          <TextInput label="Сумма" type="number" value={form.amount} onChange={(amount) => setForm({ ...form, amount })} />
-          <TextInput label="Дата закрытия" type="date" value={form.close_date} onChange={(close_date) => setForm({ ...form, close_date })} />
-          <TextInput label="Комментарий" value={form.notes} onChange={(notes) => setForm({ ...form, notes })} />
-          <button className="primary-button" type="submit"><Plus size={18} /> Создать сделку</button>
-        </form>
-      </Panel>
-
-      <div className="kanban">
-        {grouped.map((stage) => (
-          <section className="kanban-column" key={stage.id}>
-            <header>
-              <h3>{stage.name}</h3>
-              <span>{stage.deals.length}</span>
-            </header>
-            <div className="deal-stack">
-              {stage.deals.map((deal) => (
-                <article className="deal-card" key={deal.id}>
-                  <h4>{deal.title}</h4>
-                  <p>{deal.client_company || deal.client_name}</p>
-                  <strong>{money(deal.amount)}</strong>
-                  <div className="progress">
-                    <span style={{ width: `${deal.probability}%` }} />
-                  </div>
-                  <div className="deal-actions">
-                    <select
-                      value={deal.stage_id}
-                      onChange={(event) => {
-                        const nextStage = stages.find((item) => String(item.id) === event.target.value);
-                        patchDeal.mutate({
-                          id: deal.id,
-                          body: { stage_id: nextStage.id, probability: nextStage.probability },
-                        });
-                      }}
-                    >
-                      {stages.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                    </select>
-                    <button onClick={() => patchDeal.mutate({ id: deal.id, body: { status: 'won' } })}>Оплачено</button>
-                    <button onClick={() => patchDeal.mutate({ id: deal.id, body: { status: 'lost' } })}>Потеряна</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function Tasks() {
-  const queryClient = useQueryClient();
-  const { users, clients, deals } = useReferenceData();
-  const { data = [], isLoading } = useQuery({ queryKey: ['tasks'], queryFn: () => api('/tasks') });
-  const [form, setForm] = useState({
-    title: '',
-    description: '',
-    due_date: '',
-    type: 'call',
-    manager_id: '',
-    client_id: '',
-    deal_id: '',
-  });
-  const createTask = useMutation({
-    mutationFn: (body) => api('/tasks', { method: 'POST', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      setForm({ title: '', description: '', due_date: '', type: 'call', manager_id: '', client_id: '', deal_id: '' });
-    },
-  });
-  const patchTask = useMutation({
-    mutationFn: ({ id, body }) => api(`/tasks/${id}`, { method: 'PATCH', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['reports'] });
-    },
-  });
-
-  if (isLoading) return <Loading />;
-
-  return (
-    <section className="stack">
-      <Panel title="Постановка задачи менеджеру" action={<ClipboardList size={18} />}>
-        <form className="form-grid" onSubmit={(event) => {
-          event.preventDefault();
-          createTask.mutate({
-            ...form,
-            manager_id: form.manager_id || null,
-            client_id: form.client_id || null,
-            deal_id: form.deal_id || null,
-          });
-        }}>
-          <TextInput label="Задача" value={form.title} onChange={(title) => setForm({ ...form, title })} required />
-          <TextInput label="Описание" value={form.description} onChange={(description) => setForm({ ...form, description })} />
-          <TextInput label="Срок" type="date" value={form.due_date} onChange={(due_date) => setForm({ ...form, due_date })} required />
-          <Select label="Тип" value={form.type} onChange={(type) => setForm({ ...form, type })} options={[
-            ['call', 'Звонок'],
-            ['email', 'Email'],
-            ['meeting', 'Встреча'],
-            ['document', 'Документ'],
-          ]} />
-          <Select label="Менеджер" value={form.manager_id} onChange={(manager_id) => setForm({ ...form, manager_id })} options={[
-            ['', 'Не назначен'],
-            ...users.filter((user) => user.role === 'manager').map((user) => [user.id, user.name]),
-          ]} />
-          <Select label="Клиент" value={form.client_id} onChange={(client_id) => setForm({ ...form, client_id })} options={[
-            ['', 'Не привязан'],
-            ...clients.map((client) => [client.id, client.name]),
-          ]} />
-          <Select label="Сделка" value={form.deal_id} onChange={(deal_id) => setForm({ ...form, deal_id })} options={[
-            ['', 'Не привязана'],
-            ...deals.map((deal) => [deal.id, deal.title]),
-          ]} />
-          <button className="primary-button" type="submit"><Plus size={18} /> Добавить задачу</button>
-        </form>
-      </Panel>
-
-      <TaskList tasks={data} onDone={(task) => patchTask.mutate({ id: task.id, body: { status: 'done' } })} />
-    </section>
-  );
-}
-
-function Reports() {
-  const { data, isLoading } = useQuery({ queryKey: ['reports'], queryFn: () => api('/reports') });
-
-  if (isLoading) return <Loading />;
-
-  const conversionRate = data.conversion.leads_total
-    ? Math.round((data.conversion.converted / data.conversion.leads_total) * 100)
-    : 0;
-
-  return (
-    <section className="stack">
       <div className="metric-grid">
-        <Metric label="Всего сделок" value={data.total.deals_count} tone="blue" />
-        <Metric label="Портфель" value={money(data.total.pipeline_amount)} tone="green" />
-        <Metric label="Закрыто оплатой" value={money(data.total.won_amount)} tone="amber" />
-        <Metric label="Прогноз" value={money(data.total.forecast_amount)} tone="violet" />
-        <Metric label="Конверсия лидов" value={`${conversionRate}%`} tone="red" />
+        <Metric label="Клиенты" value={report.data.stats.clients} />
+        <Metric label="Портфель" value={money(report.data.stats.activeAmount)} tone="green" />
+        <Metric label="Успешные сделки" value={report.data.stats.wonClients} tone="green" />
+        <Metric label="Сумма сделок" value={money(report.data.stats.wonAmount)} tone="amber" />
       </div>
-
+      <div className="metric-grid">
+        <Metric label="Переходы" value={report.data.stats.transitions} />
+        <Metric label="Заметки" value={report.data.stats.notes} tone="green" />
+        <Metric label="Выполнено событий" value={report.data.stats.completedInteractions} tone="amber" />
+        <Metric label="Просрочено" value={report.data.stats.overdueInteractions} tone="violet" />
+      </div>
       <div className="two-columns">
-        <Panel title="Воронка и конверсия" action={<BarChart3 size={18} />}>
-          <Funnel stages={data.funnel} />
+        <Panel title="Воронка проекта" icon={BriefcaseBusiness}>
+          <div className="funnel">
+            {report.data.stages.map((stage) => (
+              <div className="funnel-row" key={stage.id}>
+                <div>
+                  <strong>{stage.name}</strong>
+                  <span>{stage.clients_count} клиентов · {money(stage.amount)}</span>
+                </div>
+                <div className="bar">
+                  <span style={{ width: `${Math.max(stage.clients_count * 18, 5)}%`, background: stage.color }} />
+                </div>
+              </div>
+            ))}
+          </div>
         </Panel>
-        <Panel title="Эффективность менеджеров" action={<UsersRound size={18} />}>
+        {isOwner && (
+          <Panel title="Просрочили события" icon={CalendarClock}>
+            <div className="manager-list">
+              {(report.data.overdue || []).map((item) => (
+                <div className="manager-row" key={item.id}>
+                  <div>
+                    <strong>{item.manager_name || 'Без менеджера'}</strong>
+                    <span>{item.client_name} · {item.title}</span>
+                  </div>
+                  <b>{dateText(item.scheduled_at)}</b>
+                </div>
+              ))}
+              {(report.data.overdue || []).length === 0 && (
+                <p className="sidebar-empty">Просроченных событий нет</p>
+              )}
+            </div>
+          </Panel>
+        )}
+        <Panel title={isOwner ? 'Лидерборд менеджеров' : 'Моя активность'} icon={BarChart3}>
           <div className="manager-list">
-            {data.managers.map((manager) => (
+            {report.data.managers.map((manager) => (
               <div className="manager-row" key={manager.id}>
                 <div>
                   <strong>{manager.name}</strong>
-                  <span>{manager.deals_count} сделок, просрочено задач: {manager.overdue_tasks}</span>
+                  <span>{manager.clients_count} клиентов · {manager.transitions_count} переходов · просрочек {manager.overdue_interactions}</span>
                 </div>
-                <b>{money(manager.amount)}</b>
+                <b>{money(manager.pipeline_amount)}</b>
               </div>
             ))}
           </div>
@@ -563,126 +1413,16 @@ function Reports() {
   );
 }
 
-function SettingsPage() {
-  const queryClient = useQueryClient();
-  const { users, stages } = useReferenceData();
-  const [userForm, setUserForm] = useState({ name: '', email: '', role: 'manager' });
-  const [stageForm, setStageForm] = useState({ name: '', position: '', probability: 10 });
-
-  const createUser = useMutation({
-    mutationFn: (body) => api('/users', { method: 'POST', body }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] });
-      setUserForm({ name: '', email: '', role: 'manager' });
-    },
-  });
-  const createStage = useMutation({
-    mutationFn: (body) => api('/stages', { method: 'POST', body }),
-    onSuccess: () => {
-      ['stages', 'dashboard', 'reports'].forEach((key) => queryClient.invalidateQueries({ queryKey: [key] }));
-      setStageForm({ name: '', position: '', probability: 10 });
-    },
-  });
-
+function NavButton({ icon: Icon, label, active, onClick }) {
   return (
-    <section className="stack">
-      <div className="two-columns">
-        <Panel title="Пользователи и роли" action={<UsersRound size={18} />}>
-          <form className="compact-form" onSubmit={(event) => {
-            event.preventDefault();
-            createUser.mutate(userForm);
-          }}>
-            <TextInput label="Имя" value={userForm.name} onChange={(name) => setUserForm({ ...userForm, name })} required />
-            <TextInput label="Email" value={userForm.email} onChange={(email) => setUserForm({ ...userForm, email })} required />
-            <Select label="Роль" value={userForm.role} onChange={(role) => setUserForm({ ...userForm, role })} options={[
-              ['manager', 'Менеджер'],
-              ['leader', 'Руководитель'],
-            ]} />
-            <button className="primary-button" type="submit"><Plus size={18} /> Добавить</button>
-          </form>
-          <div className="settings-list">
-            {users.map((user) => (
-              <div key={user.id}>
-                <strong>{user.name}</strong>
-                <span>{user.email} · {user.role === 'leader' ? 'руководитель' : 'менеджер'}</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="Этапы воронки" action={<Settings size={18} />}>
-          <form className="compact-form" onSubmit={(event) => {
-            event.preventDefault();
-            createStage.mutate({
-              ...stageForm,
-              position: Number(stageForm.position),
-              probability: Number(stageForm.probability),
-            });
-          }}>
-            <TextInput label="Название этапа" value={stageForm.name} onChange={(name) => setStageForm({ ...stageForm, name })} required />
-            <TextInput label="Позиция" type="number" value={stageForm.position} onChange={(position) => setStageForm({ ...stageForm, position })} required />
-            <TextInput label="Вероятность, %" type="number" value={stageForm.probability} onChange={(probability) => setStageForm({ ...stageForm, probability })} />
-            <button className="primary-button" type="submit"><Plus size={18} /> Добавить</button>
-          </form>
-          <div className="settings-list">
-            {stages.map((stage) => (
-              <div key={stage.id}>
-                <strong>{stage.position}. {stage.name}</strong>
-                <span>Вероятность закрытия: {stage.probability}%</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      </div>
-    </section>
+    <button className={active ? 'nav-item active' : 'nav-item'} onClick={onClick}>
+      <Icon size={18} />
+      <span>{label}</span>
+    </button>
   );
 }
 
-function Funnel({ stages }) {
-  const max = Math.max(...stages.map((stage) => Number(stage.amount || stage.deals_count || 1)), 1);
-
-  return (
-    <div className="funnel">
-      {stages.map((stage) => (
-        <div className="funnel-row" key={stage.id}>
-          <div>
-            <strong>{stage.name}</strong>
-            <span>{stage.deals_count} сделок · {money(stage.amount)}</span>
-          </div>
-          <div className="bar">
-            <span style={{ width: `${Math.max((Number(stage.amount || 0) / max) * 100, stage.deals_count ? 12 : 4)}%` }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function TaskList({ tasks, onDone, compact = false }) {
-  return (
-    <div className={compact ? 'task-list compact' : 'task-list'}>
-      {tasks.map((task) => (
-        <article className="task-card" key={task.id}>
-          <div>
-            <h3>{task.title}</h3>
-            <p>{task.description || task.deal_title || task.client_name || 'Без описания'}</p>
-            <span>{task.manager_name || 'Не назначен'} · {dateText(task.due_date)}</span>
-          </div>
-          <div className="task-side">
-            <Status value={task.status} />
-            {onDone && task.status !== 'done' && (
-              <button className="icon-button" title="Отметить выполненной" onClick={() => onDone(task)}>
-                <CheckCircle2 size={18} />
-              </button>
-            )}
-          </div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function Metric({ label, value, tone }) {
+function Metric({ label, value, tone = 'blue' }) {
   return (
     <article className={`metric ${tone}`}>
       <span>{label}</span>
@@ -691,12 +1431,12 @@ function Metric({ label, value, tone }) {
   );
 }
 
-function Panel({ title, action, children }) {
+function Panel({ title, icon: Icon, children, className = '' }) {
   return (
-    <section className="panel">
+    <section className={`panel ${className}`.trim()}>
       <header className="panel-header">
         <h2>{title}</h2>
-        <div className="panel-action">{action}</div>
+        {Icon && <div className="panel-action"><Icon size={18} /></div>}
       </header>
       {children}
     </section>
@@ -723,24 +1463,17 @@ function Select({ label, value, onChange, options }) {
   );
 }
 
-function Status({ value }) {
-  const labels = {
-    new: 'новый',
-    qualified: 'квалифицирован',
-    converted: 'в сделке',
-    lost: 'потерян',
-    open: 'открыта',
-    won: 'оплачена',
-    planned: 'запланирована',
-    done: 'выполнена',
-    overdue: 'просрочена',
-  };
-
-  return <span className={`status ${value}`}>{labels[value] || value}</span>;
+function EmptyState({ title, text }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <span>{text}</span>
+    </div>
+  );
 }
 
-function Loading() {
-  return <div className="loading">Загрузка данных...</div>;
+function Loading({ label = 'Загрузка...' }) {
+  return <div className="loading">{label}</div>;
 }
 
 createRoot(document.getElementById('root')).render(
@@ -748,5 +1481,5 @@ createRoot(document.getElementById('root')).render(
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>
-  </React.StrictMode>,
+  </React.StrictMode>
 );

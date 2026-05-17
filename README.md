@@ -1,37 +1,78 @@
-# CRM-система для отдела продаж
+# Sales CRM
 
-Минимальная CRM по документам из лабораторной работы: React + TanStack Query на фронтенде, Express + SQLite на бэкенде.
+CRM для управляющего и менеджеров продаж. Текущая версия развивает MVP в минимальную рабочую вертикаль:
 
-## Что реализовано
+- вход и регистрация по email/password;
+- роли `manager_owner` и `sales_manager`;
+- компания и проекты;
+- менеджеры проекта;
+- проектная воронка;
+- клиенты с назначением менеджеру;
+- Kanban по этапам воронки;
+- карточка клиента с chat-style notebook;
+- запланированные взаимодействия;
+- in-app уведомления;
+- dashboard и CSV-отчет по проекту.
 
-- регистрация и квалификация лидов;
-- конвертация лида в клиента и сделку;
-- клиентская база с контактами и историей;
-- воронка продаж с настраиваемыми этапами;
-- задачи менеджеров и контроль просрочек;
-- пользователи с ролями менеджера и руководителя;
-- отчеты по воронке, прогнозу продаж, конверсии и менеджерам;
-- история коммуникаций с клиентами.
+## Stack
+
+- Frontend: React, Vite, TanStack Query, lucide-react.
+- Backend: Go REST API.
+- Database: SQLite.
 
 ## Запуск
 
-```bash
-npm install
-npm run dev
+```powershell
+npm.cmd install
+npm.cmd run dev
 ```
 
 После запуска:
 
-- фронтенд: http://127.0.0.1:5173
+- frontend: http://127.0.0.1:5173
 - API: http://127.0.0.1:3001/api
 
-SQLite-база создается автоматически в `server/data/sales_crm.db` и заполняется демонстрационными данными при первом запуске.
+На Windows используйте `npm.cmd`, если PowerShell блокирует `npm.ps1`.
 
 ## Отдельные команды
 
-```bash
-npm run server
-npm run client
-npm run build
-npm start
+```powershell
+npm.cmd run server
+npm.cmd run client
+npm.cmd run build
 ```
+
+`npm.cmd run server` запускает Go backend через:
+
+```powershell
+go run ./server
+```
+
+Старый Express backend оставлен как резерв и запускается командой:
+
+```powershell
+npm.cmd run server:node
+```
+
+## Демо-аккаунты
+
+Пароль для всех демо-пользователей:
+
+```text
+demo123
+```
+
+- управляющий: `owner@crm.local`
+- менеджер: `ivan@crm.local`
+- менеджер: `anna@crm.local`
+
+## Данные
+
+SQLite-база создается автоматически:
+
+```text
+server/data/sales_crm.db
+```
+
+Схема CRM создается через таблицу `schema_migrations`. Старые таблицы первого MVP не удаляются.
+
