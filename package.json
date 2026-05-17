@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "client": "vite --host 127.0.0.1",
-    "server": "node --watch server/index.js",
+    "server": "go run ./server",
+    "server:node": "node --watch server/index.js",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "start": "node server/index.js"
+    "start": "go run ./server"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.8",

@@ -4,3 +4,9 @@ server/data/*.db
 server/data/*.db-*
 .env
 *.log
+.gocache
+.gopath
+*.exe
+AGENTS.md
+PROJECT_SPEC.md
+STYLE_GUIDE.md
