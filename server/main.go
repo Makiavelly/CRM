@@ -243,11 +243,16 @@ func (a *app) handleProjectRoutes(w http.ResponseWriter, r *http.Request, path s
 	}
 
 	switch {
+	case len(parts) == 2 && r.Method == http.MethodDelete:
+		a.deleteProject(w, projectID, user)
 	case len(parts) == 3 && parts[2] == "members" && r.Method == http.MethodGet:
 		rows, err := a.listMembers(projectID)
 		writeResult(w, rows, err)
 	case len(parts) == 3 && parts[2] == "members" && r.Method == http.MethodPost:
 		a.addMember(w, r, projectID, user)
+	case len(parts) == 4 && parts[2] == "members" && r.Method == http.MethodDelete:
+		memberID, _ := strconv.ParseInt(parts[3], 10, 64)
+		a.deleteMember(w, projectID, memberID, user)
 	case len(parts) == 3 && parts[2] == "pipeline-stages" && r.Method == http.MethodGet:
 		rows, err := a.listStages(projectID)
 		writeResult(w, rows, err)
@@ -464,6 +469,78 @@ func (a *app) createProject(w http.ResponseWriter, r *http.Request, user User) {
 	writeResult(w, project, err)
 }
 
+func (a *app) deleteProject(w http.ResponseWriter, projectID int64, user User) {
+	if user.Role != "manager_owner" {
+		writeError(w, http.StatusForbidden, "Доступно только управляющему")
+		return
+	}
+	project, err := a.getProject(projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Проект не найден")
+		return
+	}
+	if asInt64(project["owner_id"]) != user.ID {
+		writeError(w, http.StatusForbidden, "Удалить проект может только владелец компании")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		DELETE FROM notifications
+		WHERE (related_entity_type = 'project' AND related_entity_id = ?)
+			OR (related_entity_type = 'client' AND related_entity_id IN (
+				SELECT id FROM crm_clients WHERE project_id = ?
+			))
+			OR (related_entity_type = 'interaction' AND related_entity_id IN (
+				SELECT id FROM client_interactions WHERE project_id = ?
+			))
+	`, projectID, projectID, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM client_notes
+		WHERE client_id IN (SELECT id FROM crm_clients WHERE project_id = ?)
+	`, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM client_interactions WHERE project_id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM stage_transitions WHERE project_id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM crm_clients WHERE project_id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM funnel_stages WHERE project_id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM project_members WHERE project_id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM projects WHERE id = ?", projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *app) addMember(w http.ResponseWriter, r *http.Request, projectID int64, user User) {
 	if user.Role != "manager_owner" {
 		writeError(w, http.StatusForbidden, "Доступно только управляющему")
@@ -507,6 +584,53 @@ func (a *app) addMember(w http.ResponseWriter, r *http.Request, projectID int64,
 	}
 	members, _ := a.listMembers(projectID)
 	writeJSON(w, http.StatusCreated, map[string]any{"member": manager, "members": members})
+}
+
+func (a *app) deleteMember(w http.ResponseWriter, projectID, memberID int64, user User) {
+	if user.Role != "manager_owner" {
+		writeError(w, http.StatusForbidden, "Доступно только управляющему")
+		return
+	}
+	if memberID == user.ID {
+		writeError(w, http.StatusBadRequest, "Нельзя удалить себя из проекта")
+		return
+	}
+	member, err := a.userByID(memberID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Менеджер не найден")
+		return
+	}
+	if member.Role != "sales_manager" {
+		writeError(w, http.StatusBadRequest, "Можно удалить только менеджера")
+		return
+	}
+	if !a.isProjectMember(projectID, memberID) {
+		writeError(w, http.StatusNotFound, "Менеджер не найден в проекте")
+		return
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		UPDATE crm_clients
+		SET assigned_manager_id = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE project_id = ? AND assigned_manager_id = ?
+	`, projectID, memberID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec("DELETE FROM project_members WHERE project_id = ? AND user_id = ?", projectID, memberID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *app) addStage(w http.ResponseWriter, r *http.Request, projectID int64, user User) {
@@ -570,19 +694,21 @@ func (a *app) deleteStage(w http.ResponseWriter, projectID, stageID int64, user 
 		writeError(w, http.StatusConflict, "Нельзя удалить этап, пока на нем есть клиенты")
 		return
 	}
-	if err := a.db.QueryRow("SELECT COUNT(*) FROM stage_transitions WHERE from_stage_id = ? OR to_stage_id = ?", stageID, stageID).Scan(&count); err != nil {
+	tx, err := a.db.Begin()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if count > 0 {
-		writeError(w, http.StatusConflict, "Нельзя удалить этап, который уже есть в истории переходов")
-		return
-	}
-	if _, err := a.db.Exec("DELETE FROM funnel_stages WHERE id = ? AND project_id = ?", stageID, projectID); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM stage_transitions WHERE project_id = ? AND (from_stage_id = ? OR to_stage_id = ?)", projectID, stageID, stageID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_, _ = a.db.Exec(`
+	if _, err := tx.Exec("DELETE FROM funnel_stages WHERE id = ? AND project_id = ?", stageID, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(`
 		UPDATE funnel_stages
 		SET position = (
 			SELECT COUNT(*) FROM funnel_stages AS previous
@@ -590,7 +716,14 @@ func (a *app) deleteStage(w http.ResponseWriter, projectID, stageID int64, user 
 				AND previous.position <= funnel_stages.position
 		)
 		WHERE project_id = ?
-	`, projectID)
+	`, projectID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -698,11 +831,17 @@ func (a *app) updateClient(w http.ResponseWriter, r *http.Request, client map[st
 		return
 	}
 	clientID := asInt64(client["id"])
+	tags := normalizeTags(req["tags"])
+	tagJSON, _ := json.Marshal(tags)
 	_, err := a.db.Exec(`
 		UPDATE crm_clients
-		SET name = ?, short_description = COALESCE(?, short_description), updated_at = CURRENT_TIMESTAMP
+		SET name = ?,
+			short_description = COALESCE(?, short_description),
+			tags = ?,
+			deal_amount = ?,
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, name, nullString(str(req["short_description"])), clientID)
+	`, name, nullString(str(req["short_description"])), string(tagJSON), asFloat(req["deal_amount"]), clientID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -946,11 +1085,26 @@ func (a *app) completeInteraction(w http.ResponseWriter, path string, user User)
 		writeError(w, http.StatusForbidden, "Нет доступа")
 		return
 	}
-	_, err = a.db.Exec(`
+	if user.Role == "sales_manager" && asInt64(row["manager_id"]) != user.ID {
+		writeError(w, http.StatusForbidden, "Менеджер может закрывать только свои события")
+		return
+	}
+	scheduledAt, err := parseInteractionTime(str(row["scheduled_at"]))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Некорректное время события")
+		return
+	}
+	status := "completed"
+	completedAtSQL := "CURRENT_TIMESTAMP"
+	if time.Now().After(scheduledAt) {
+		status = "missed"
+		completedAtSQL = "completed_at"
+	}
+	_, err = a.db.Exec(fmt.Sprintf(`
 		UPDATE client_interactions
-		SET status = 'completed', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		SET status = ?, completed_at = %s, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, id)
+	`, completedAtSQL), status, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -985,10 +1139,9 @@ func (a *app) deleteInteraction(w http.ResponseWriter, path string, user User) {
 
 func (a *app) startEmailReminderWorker() {
 	if !a.mail.enabled() {
-		log.Print("SMTP is not configured; email reminders are disabled")
-		return
+		log.Print("SMTP is not configured; email reminders are disabled, in-app reminders are enabled")
 	}
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	a.sendDueEmailReminders()
 	for range ticker.C {
@@ -1005,7 +1158,7 @@ func (a *app) sendDueEmailReminders() {
 		JOIN crm_clients ON crm_clients.id = client_interactions.client_id
 		JOIN crm_users ON crm_users.id = client_interactions.manager_id
 		WHERE client_interactions.status = 'planned'
-			AND client_interactions.email_reminder_sent_at IS NULL
+			AND client_interactions.reminder_notification_sent_at IS NULL
 		ORDER BY client_interactions.scheduled_at ASC
 		LIMIT 1000
 	`)
@@ -1023,18 +1176,40 @@ func (a *app) sendDueEmailReminders() {
 		if until < 0 || until > time.Minute {
 			continue
 		}
-		if err := a.sendInteractionReminder(row, scheduledAt); err != nil {
-			log.Printf("email reminder failed for interaction %v: %v", row["id"], err)
-			continue
-		}
-		_, err = a.db.Exec(
-			"UPDATE client_interactions SET email_reminder_sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-			asInt64(row["id"]),
-		)
+		_, err = a.db.Exec(`
+			INSERT INTO notifications (user_id, type, title, body, related_entity_type, related_entity_id)
+			VALUES (?, 'upcoming_interaction', 'Скоро событие', ?, 'interaction', ?)
+		`, asInt64(row["manager_id"]), interactionReminderBody(row, scheduledAt), asInt64(row["id"]))
 		if err != nil {
-			log.Printf("email reminder mark failed for interaction %v: %v", row["id"], err)
+			log.Printf("in-app reminder failed for interaction %v: %v", row["id"], err)
+		}
+		emailSentAt := any(nil)
+		if a.mail.enabled() {
+			if err := a.sendInteractionReminder(row, scheduledAt); err != nil {
+				log.Printf("email reminder failed for interaction %v: %v", row["id"], err)
+			} else {
+				emailSentAt = time.Now().Format("2006-01-02 15:04:05")
+			}
+		}
+		if _, err = a.db.Exec(`
+			UPDATE client_interactions
+			SET reminder_notification_sent_at = CURRENT_TIMESTAMP,
+				email_reminder_sent_at = COALESCE(?, email_reminder_sent_at),
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, emailSentAt, asInt64(row["id"])); err != nil {
+			log.Printf("reminder mark failed for interaction %v: %v", row["id"], err)
 		}
 	}
+}
+
+func interactionReminderBody(row map[string]any, scheduledAt time.Time) string {
+	return fmt.Sprintf(
+		"%s по клиенту %s через минуту: %s",
+		interactionTypeText(str(row["type"])),
+		str(row["client_name"]),
+		scheduledAt.Format("15:04"),
+	)
 }
 
 func (a *app) sendInteractionReminder(row map[string]any, scheduledAt time.Time) error {
@@ -1265,6 +1440,32 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	overdueDetailsQuery := `
+		SELECT client_interactions.id,
+			client_interactions.title,
+			client_interactions.type,
+			client_interactions.scheduled_at,
+			client_interactions.status,
+			crm_clients.name AS client_name,
+			crm_users.id AS manager_id,
+			crm_users.first_name || ' ' || crm_users.last_name AS manager_name
+		FROM client_interactions
+		JOIN crm_clients ON crm_clients.id = client_interactions.client_id
+		LEFT JOIN crm_users ON crm_users.id = client_interactions.manager_id
+		WHERE client_interactions.project_id = ?
+			AND client_interactions.status IN ('missed', 'planned')
+			AND client_interactions.scheduled_at < datetime('now')
+	`
+	overdueDetailsArgs := []any{projectID}
+	if user.Role == "sales_manager" {
+		overdueDetailsQuery += " AND client_interactions.manager_id = ?"
+		overdueDetailsArgs = append(overdueDetailsArgs, user.ID)
+	}
+	overdueDetailsQuery += " ORDER BY client_interactions.scheduled_at ASC LIMIT 100"
+	overdueDetails, err := a.queryMaps(overdueDetailsQuery, overdueDetailsArgs...)
+	if err != nil {
+		return nil, err
+	}
 	transitionsQuery := `
 		SELECT stage_transitions.*, crm_clients.name AS client_name,
 			from_stage.name AS from_stage_name, to_stage.name AS to_stage_name,
@@ -1306,6 +1507,7 @@ func (a *app) dashboard(projectID int64, user User) (map[string]any, error) {
 		"stages":      stages,
 		"managers":    managers,
 		"upcoming":    upcoming,
+		"overdue":     overdueDetails,
 		"transitions": transitions,
 	}, nil
 }
@@ -1613,6 +1815,28 @@ func (a *app) initDB() error {
 	}
 	if err := a.applyMigration(2, func() error {
 		_, err := a.db.Exec("ALTER TABLE client_interactions ADD COLUMN email_reminder_sent_at TEXT")
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := a.applyMigration(3, func() error {
+		_, err := a.db.Exec(`
+			UPDATE funnel_stages
+			SET name = 'Квалификация'
+			WHERE name = 'Потребность'
+				AND NOT EXISTS (
+					SELECT 1
+					FROM funnel_stages AS existing
+					WHERE existing.project_id = funnel_stages.project_id
+						AND existing.name = 'Квалификация'
+				)
+		`)
+		return err
+	}); err != nil {
+		return err
+	}
+	if err := a.applyMigration(4, func() error {
+		_, err := a.db.Exec("ALTER TABLE client_interactions ADD COLUMN reminder_notification_sent_at TEXT")
 		return err
 	}); err != nil {
 		return err

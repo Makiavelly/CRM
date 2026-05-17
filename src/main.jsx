@@ -22,6 +22,8 @@ import './styles.css';
 
 const queryClient = new QueryClient();
 const tokenKey = 'sales_crm_token';
+const selectedProjectKey = 'sales_crm_selected_project';
+const liveRefreshMs = 5000;
 
 async function api(path, options = {}) {
   const token = localStorage.getItem(tokenKey);
@@ -83,6 +85,16 @@ function dateKey(value) {
   return `${year}-${month}-${day}`;
 }
 
+function isInteractionOverdue(item) {
+  return item?.status !== 'completed' && new Date(item?.scheduled_at).getTime() < Date.now();
+}
+
+function interactionStatusText(item) {
+  if (item?.status === 'completed') return 'выполнено';
+  if (item?.status === 'missed' || isInteractionOverdue(item)) return 'просрочено';
+  return 'запланировано';
+}
+
 function monthTitle(value) {
   const date = new Date(`${value}-01T00:00`);
   return new Intl.DateTimeFormat('ru-RU', {
@@ -110,7 +122,10 @@ function buildCalendarDays(monthValue) {
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem(tokenKey));
-  const [selectedProjectId, setSelectedProjectId] = useState(null);
+  const [selectedProjectId, setSelectedProjectId] = useState(() => {
+    const savedProjectId = Number(localStorage.getItem(selectedProjectKey));
+    return savedProjectId || null;
+  });
 
   const me = useQuery({
     queryKey: ['me', token],
@@ -124,17 +139,25 @@ function App() {
   if (me.isLoading) return <Loading label="Загрузка профиля..." />;
 
   const projects = me.data.projects || [];
-  const projectId = selectedProjectId || projects[0]?.id;
+  const projectId = projects.some((item) => item.id === selectedProjectId) ? selectedProjectId : projects[0]?.id;
   const user = me.data.user;
+
+  function changeProject(nextProjectId) {
+    const normalizedProjectId = nextProjectId ? Number(nextProjectId) : null;
+    if (normalizedProjectId) localStorage.setItem(selectedProjectKey, String(normalizedProjectId));
+    else localStorage.removeItem(selectedProjectKey);
+    setSelectedProjectId(normalizedProjectId);
+  }
 
   return (
     <CrmShell
       user={user}
       projects={projects}
       projectId={projectId}
-      onProjectChange={setSelectedProjectId}
+      onProjectChange={changeProject}
       onLogout={() => {
         localStorage.removeItem(tokenKey);
+        localStorage.removeItem(selectedProjectKey);
         queryClient.clear();
         setToken(null);
       }}
@@ -265,9 +288,20 @@ function CrmShell({ user, projects, projectId, onProjectChange, onLogout }) {
         {projectId && activeView === 'settings' && (
           <ProjectSettings
             projectId={projectId}
+            project={project}
+            projects={projects}
             onProjectCreated={(nextProjectId) => {
               queryClient.invalidateQueries({ queryKey: ['me'] });
               onProjectChange(nextProjectId);
+            }}
+            onProjectDeleted={(deletedProjectId) => {
+              const nextProject = projects.find((item) => item.id !== deletedProjectId);
+              queryClient.setQueriesData({ queryKey: ['me'] }, (old) => old ? {
+                ...old,
+                projects: (old.projects || []).filter((item) => item.id !== deletedProjectId),
+              } : old);
+              queryClient.invalidateQueries({ queryKey: ['me'] });
+              onProjectChange(nextProject?.id || null);
             }}
           />
         )}
@@ -281,11 +315,13 @@ function SidebarDigest({ projectId }) {
     queryKey: ['sidebar-dashboard', projectId],
     queryFn: () => api(`/dashboard?projectId=${projectId}`),
     enabled: Boolean(projectId),
+    refetchInterval: liveRefreshMs,
   });
   const notifications = useQuery({
     queryKey: ['notifications'],
     queryFn: () => api('/notifications'),
     enabled: Boolean(projectId),
+    refetchInterval: liveRefreshMs,
   });
 
   const allNotifications = notifications.data || [];
@@ -330,9 +366,9 @@ function SidebarDigest({ projectId }) {
 function Workspace({ projectId, user }) {
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [query, setQuery] = useState('');
-  const dashboard = useQuery({ queryKey: ['dashboard', projectId], queryFn: () => api(`/dashboard?projectId=${projectId}`) });
+  const dashboard = useQuery({ queryKey: ['dashboard', projectId], queryFn: () => api(`/dashboard?projectId=${projectId}`), refetchInterval: liveRefreshMs });
   const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
-  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`) });
+  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`), refetchInterval: liveRefreshMs });
   const members = useQuery({
     queryKey: ['members', projectId],
     queryFn: () => api(`/projects/${projectId}/members`),
@@ -409,6 +445,17 @@ function Kanban({ projectId, stages, clients, managers = [], canAssign = false, 
       queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
       queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const deleteClient = useMutation({
+    mutationFn: (clientId) => api(`/clients/${clientId}`, { method: 'DELETE' }),
+    onSuccess: (_result, clientId) => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((client) => client.id !== clientId));
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
 
@@ -492,7 +539,7 @@ function Chats({ projectId, currentUser }) {
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [note, setNote] = useState('');
   const [editingNote, setEditingNote] = useState({ id: null, message: '' });
-  const [clientForm, setClientForm] = useState({ name: '', short_description: '' });
+  const [clientForm, setClientForm] = useState({ name: '', short_description: '', tags: '', deal_amount: '' });
   const [contactForm, setContactForm] = useState({ phone: '', email: '', telegram: '' });
   const [eventForm, setEventForm] = useState({ title: '', type: 'call', scheduled_at: '', description: '' });
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -502,7 +549,7 @@ function Chats({ projectId, currentUser }) {
   const [selectedCalendarDay, setSelectedCalendarDay] = useState(dateKey(new Date()));
   const [savedAction, setSavedAction] = useState('');
   const savedTimer = useRef(null);
-  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`) });
+  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`), refetchInterval: liveRefreshMs });
   const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
 
   function markSaved(action, after) {
@@ -530,6 +577,8 @@ function Chats({ projectId, currentUser }) {
     setClientForm({
       name: selectedClient.name || '',
       short_description: selectedClient.short_description || '',
+      tags: (selectedClient.tags || []).join(', '),
+      deal_amount: selectedClient.deal_amount ?? '',
     });
     setContactForm({
       phone: selectedClient.contacts?.phone || '',
@@ -547,6 +596,7 @@ function Chats({ projectId, currentUser }) {
     queryKey: ['interactions', activeClientId],
     queryFn: () => api(`/clients/${activeClientId}/interactions`),
     enabled: Boolean(activeClientId),
+    refetchInterval: liveRefreshMs,
   });
 
   const addNote = useMutation({
@@ -595,17 +645,6 @@ function Chats({ projectId, currentUser }) {
       queryClient.invalidateQueries({ queryKey: ['report', projectId] });
     },
   });
-  const deleteClient = useMutation({
-    mutationFn: (clientId) => api(`/clients/${clientId}`, { method: 'DELETE' }),
-    onSuccess: (_result, clientId) => {
-      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((client) => client.id !== clientId));
-      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['notifications'] });
-    },
-  });
   const updateClient = useMutation({
     mutationFn: () => api(`/clients/${activeClientId}`, {
       method: 'PATCH',
@@ -647,6 +686,18 @@ function Chats({ projectId, currentUser }) {
     mutationFn: (interactionId) => api(`/interactions/${interactionId}`, { method: 'DELETE' }),
     onSuccess: (_result, interactionId) => {
       queryClient.setQueryData(['interactions', activeClientId], (old = []) => old.filter((item) => item.id !== interactionId));
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const completeInteraction = useMutation({
+    mutationFn: (interactionId) => api(`/interactions/${interactionId}/complete`, { method: 'POST' }),
+    onSuccess: (updatedInteraction) => {
+      queryClient.setQueryData(['interactions', activeClientId], (old = []) => old.map((item) => (
+        item.id === updatedInteraction.id ? { ...item, ...updatedInteraction } : item
+      )));
       queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
       queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
@@ -788,6 +839,10 @@ function Chats({ projectId, currentUser }) {
           }}>
             <TextInput label="Название клиента" value={clientForm.name} onChange={(name) => setClientForm({ ...clientForm, name })} required />
             <TextInput label="Короткое описание" value={clientForm.short_description} onChange={(short_description) => setClientForm({ ...clientForm, short_description })} />
+            <div className="inline-fields">
+              <TextInput label="Теги" value={clientForm.tags} onChange={(tags) => setClientForm({ ...clientForm, tags })} />
+              <TextInput label="Сумма" type="number" value={clientForm.deal_amount} onChange={(deal_amount) => setClientForm({ ...clientForm, deal_amount })} />
+            </div>
             <button className={savedAction === 'client' ? 'secondary-button saved' : 'secondary-button'} type="submit">
               {savedAction === 'client' ? 'Сохранено' : 'Сохранить клиента'}
             </button>
@@ -875,9 +930,14 @@ function Chats({ projectId, currentUser }) {
                 <article className="calendar-event" key={item.id}>
                   <div>
                     <time>{timeText(item.scheduled_at)}</time>
-                    <span>{item.title}</span>
+                    <span>{item.title} · {interactionStatusText(item)}</span>
                   </div>
-                  <button className="text-button danger" type="button" onClick={() => deleteInteraction.mutate(item.id)}>Удалить</button>
+                  <span className="message-actions">
+                    {item.status === 'planned' && !isInteractionOverdue(item) && (
+                      <button className="text-button" type="button" onClick={() => completeInteraction.mutate(item.id)}>Выполнено</button>
+                    )}
+                    <button className="text-button danger" type="button" onClick={() => deleteInteraction.mutate(item.id)}>Удалить</button>
+                  </span>
                 </article>
               ))}
               {selectedDayEvents.length === 0 && <p className="sidebar-empty">На выбранный день событий нет</p>}
@@ -986,9 +1046,9 @@ function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
               <article className="interaction-row" key={item.id}>
                 <div>
                   <strong>{item.title}</strong>
-                  <span>{item.type} · {dateText(item.scheduled_at)} · {item.status}</span>
+                  <span>{item.type} · {dateText(item.scheduled_at)} · {interactionStatusText(item)}</span>
                 </div>
-                {item.status !== 'completed' && (
+                {item.status === 'planned' && !isInteractionOverdue(item) && (
                   <button className="icon-button" title="Выполнено" onClick={() => completeInteraction.mutate(item.id)}>
                     <CheckCircle2 size={18} />
                   </button>
@@ -1018,7 +1078,7 @@ function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
   );
 }
 
-function ProjectSettings({ projectId, onProjectCreated }) {
+function ProjectSettings({ projectId, project, projects = [], onProjectCreated, onProjectDeleted }) {
   const queryClient = useQueryClient();
   const members = useQuery({ queryKey: ['members', projectId], queryFn: () => api(`/projects/${projectId}/members`) });
   const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
@@ -1047,11 +1107,36 @@ function ProjectSettings({ projectId, onProjectCreated }) {
       onProjectCreated?.(project.id);
     },
   });
+  const deleteProject = useMutation({
+    mutationFn: () => api(`/projects/${projectId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ['members', projectId] });
+      queryClient.removeQueries({ queryKey: ['stages', projectId] });
+      queryClient.removeQueries({ queryKey: ['clients', projectId] });
+      queryClient.removeQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.removeQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.removeQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      onProjectDeleted?.(projectId);
+    },
+  });
   const addMember = useMutation({
     mutationFn: () => api(`/projects/${projectId}/members`, { method: 'POST', body: memberForm }),
     onSuccess: () => {
       setMemberForm({ first_name: '', last_name: '', email: '' });
       queryClient.invalidateQueries({ queryKey: ['members', projectId] });
+    },
+  });
+  const deleteMember = useMutation({
+    mutationFn: (memberId) => api(`/projects/${projectId}/members/${memberId}`, { method: 'DELETE' }),
+    onSuccess: (_result, memberId) => {
+      queryClient.setQueryData(['members', projectId], (old = []) => old.filter((member) => member.id !== memberId));
+      queryClient.invalidateQueries({ queryKey: ['members', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
     },
   });
   const addClient = useMutation({
@@ -1109,8 +1194,30 @@ function ProjectSettings({ projectId, onProjectCreated }) {
           <TextInput label="Название проекта" value={projectForm.name} onChange={(name) => setProjectForm({ ...projectForm, name })} required />
           <TextInput label="Описание" value={projectForm.description} onChange={(description) => setProjectForm({ ...projectForm, description })} />
           <button className="primary-button" type="submit"><Plus size={18} /> Создать проект</button>
-          <p className="hint">Проект сразу получит базовую воронку: лид, интерес, потребность, переговоры, сделка, отказ.</p>
+          <p className="hint">Проект сразу получит базовую воронку: лид, интерес, квалификация, переговоры, сделка, отказ.</p>
         </form>
+      </Panel>
+
+      <Panel title="Удаление проекта" icon={Settings}>
+        <div className="stack-form">
+          <p className="hint">
+            Проект “{project?.name || 'текущий проект'}” будет удален вместе с клиентами, этапами, заметками, событиями и отчетной историей.
+          </p>
+          <button
+            className="danger-button"
+            type="button"
+            disabled={deleteProject.isPending}
+            onClick={() => {
+              const projectName = project?.name || 'текущий проект';
+              if (window.confirm(`Удалить проект "${projectName}" навсегда? Это действие нельзя отменить.`)) {
+                deleteProject.mutate();
+              }
+            }}
+          >
+            {deleteProject.isPending ? 'Удаление...' : 'Удалить проект'}
+          </button>
+          {projects.length <= 1 && <p className="hint">Это последний доступный проект. После удаления рабочая область станет пустой.</p>}
+        </div>
       </Panel>
 
       <Panel title="Менеджеры проекта" icon={UserPlus}>
@@ -1128,9 +1235,24 @@ function ProjectSettings({ projectId, onProjectCreated }) {
         </form>
         <div className="settings-list">
           {members.data.map((member) => (
-            <div key={member.id}>
-              <strong>{member.name}</strong>
-              <span>{member.email} · {member.role === 'manager_owner' ? 'управляющий' : 'менеджер'}</span>
+            <div className="stage-row" key={member.id}>
+              <div>
+                <strong>{member.name}</strong>
+                <span>{member.email} · {member.role === 'manager_owner' ? 'управляющий' : 'менеджер'}</span>
+              </div>
+              {member.role === 'sales_manager' && (
+                <button
+                  className="danger-button"
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`Удалить менеджера "${member.name}" из проекта? Его клиенты останутся без назначенного менеджера.`)) {
+                      deleteMember.mutate(member.id);
+                    }
+                  }}
+                >
+                  Удалить
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1178,7 +1300,7 @@ function ProjectSettings({ projectId, onProjectCreated }) {
                 className="danger-button"
                 type="button"
                 onClick={() => deleteStage.mutate(stage.id)}
-                title="Удалить этап можно только если на нем нет клиентов и истории переходов"
+                title="Удалить этап можно только если на нем нет клиентов"
               >
                 Удалить
               </button>
@@ -1243,6 +1365,24 @@ function Reports({ projectId, user }) {
             ))}
           </div>
         </Panel>
+        {isOwner && (
+          <Panel title="Просрочили события" icon={CalendarClock}>
+            <div className="manager-list">
+              {(report.data.overdue || []).map((item) => (
+                <div className="manager-row" key={item.id}>
+                  <div>
+                    <strong>{item.manager_name || 'Без менеджера'}</strong>
+                    <span>{item.client_name} · {item.title}</span>
+                  </div>
+                  <b>{dateText(item.scheduled_at)}</b>
+                </div>
+              ))}
+              {(report.data.overdue || []).length === 0 && (
+                <p className="sidebar-empty">Просроченных событий нет</p>
+              )}
+            </div>
+          </Panel>
+        )}
         <Panel title={isOwner ? 'Лидерборд менеджеров' : 'Моя активность'} icon={BarChart3}>
           <div className="manager-list">
             {report.data.managers.map((manager) => (
