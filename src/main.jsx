@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -55,6 +55,57 @@ function dateText(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+function dateGroupText(value) {
+  if (!value) return 'Без даты';
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date(value));
+}
+
+function timeText(value) {
+  if (!value) return '';
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value));
+}
+
+function dateKey(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function monthTitle(value) {
+  const date = new Date(`${value}-01T00:00`);
+  return new Intl.DateTimeFormat('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+}
+
+function buildCalendarDays(monthValue) {
+  const [year, month] = monthValue.split('-').map(Number);
+  const firstDay = new Date(year, month - 1, 1);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const leading = (firstDay.getDay() + 6) % 7;
+  return [
+    ...Array.from({ length: leading }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, index) => {
+      const day = index + 1;
+      return {
+        day,
+        key: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      };
+    }),
+  ];
 }
 
 function App() {
@@ -166,6 +217,7 @@ function AuthScreen({ onAuth, expired = false }) {
 }
 
 function CrmShell({ user, projects, projectId, onProjectChange, onLogout }) {
+  const queryClient = useQueryClient();
   const [activeView, setActiveView] = useState('workspace');
   const project = projects.find((item) => item.id === projectId);
   const isOwner = user.role === 'manager_owner';
@@ -183,16 +235,19 @@ function CrmShell({ user, projects, projectId, onProjectChange, onLogout }) {
 
         <nav className="nav">
           <NavButton icon={BriefcaseBusiness} label="Рабочая область" active={activeView === 'workspace'} onClick={() => setActiveView('workspace')} />
+          {!isOwner && <NavButton icon={MessageSquareText} label="Чаты" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />}
           <NavButton icon={BarChart3} label="Метрики" active={activeView === 'reports'} onClick={() => setActiveView('reports')} />
           {isOwner && <NavButton icon={Settings} label="Настройки проекта" active={activeView === 'settings'} onClick={() => setActiveView('settings')} />}
         </nav>
+
+        {projectId && <SidebarDigest projectId={projectId} />}
       </aside>
 
       <main className="content">
         <header className="topbar">
           <div>
             <p>{project?.company_name || 'Компания'} / {project?.name || 'Проект не выбран'}</p>
-            <h1>{activeView === 'workspace' ? 'Клиенты и воронка' : activeView === 'reports' ? 'Отчеты и метрики' : 'Настройки проекта'}</h1>
+            <h1>{activeView === 'workspace' ? 'Клиенты и воронка' : activeView === 'chats' ? 'Чаты клиентов' : activeView === 'reports' ? 'Отчеты и метрики' : 'Настройки проекта'}</h1>
           </div>
           <div className="topbar-actions">
             <select value={projectId || ''} onChange={(event) => onProjectChange(Number(event.target.value))}>
@@ -205,27 +260,91 @@ function CrmShell({ user, projects, projectId, onProjectChange, onLogout }) {
 
         {!projectId && <EmptyState title="Нет проекта" text="Управляющий создает компанию и проект при регистрации." />}
         {projectId && activeView === 'workspace' && <Workspace projectId={projectId} user={user} />}
-        {projectId && activeView === 'reports' && <Reports projectId={projectId} />}
-        {projectId && activeView === 'settings' && <ProjectSettings projectId={projectId} />}
+        {projectId && activeView === 'chats' && <Chats projectId={projectId} currentUser={user} />}
+        {projectId && activeView === 'reports' && <Reports projectId={projectId} user={user} />}
+        {projectId && activeView === 'settings' && (
+          <ProjectSettings
+            projectId={projectId}
+            onProjectCreated={(nextProjectId) => {
+              queryClient.invalidateQueries({ queryKey: ['me'] });
+              onProjectChange(nextProjectId);
+            }}
+          />
+        )}
       </main>
     </div>
   );
 }
 
+function SidebarDigest({ projectId }) {
+  const dashboard = useQuery({
+    queryKey: ['sidebar-dashboard', projectId],
+    queryFn: () => api(`/dashboard?projectId=${projectId}`),
+    enabled: Boolean(projectId),
+  });
+  const notifications = useQuery({
+    queryKey: ['notifications'],
+    queryFn: () => api('/notifications'),
+    enabled: Boolean(projectId),
+  });
+
+  const allNotifications = notifications.data || [];
+  const upcoming = dashboard.data?.upcoming || [];
+
+  if (dashboard.isLoading || notifications.isLoading || (!allNotifications.length && !upcoming.length)) return null;
+
+  return (
+    <div className="sidebar-digest">
+      <section className="sidebar-digest-block">
+        <div className="sidebar-digest-title">
+          <Bell size={15} />
+          <span>Уведомления</span>
+        </div>
+        <div className="sidebar-digest-scroll">
+          {allNotifications.length ? allNotifications.map((item) => (
+            <article key={item.id} className={item.is_read ? 'sidebar-digest-item muted' : 'sidebar-digest-item'}>
+              <strong>{item.title}</strong>
+              <span>{item.body}</span>
+            </article>
+          )) : <p className="sidebar-empty">Новых нет</p>}
+        </div>
+      </section>
+
+      <section className="sidebar-digest-block">
+        <div className="sidebar-digest-title">
+          <CalendarClock size={15} />
+          <span>Ближайшие</span>
+        </div>
+        <div className="sidebar-digest-scroll">
+          {upcoming.length ? upcoming.map((item) => (
+            <article key={item.id} className="sidebar-digest-item">
+              <strong>{item.title}</strong>
+              <span>{item.client_name} · {dateText(item.scheduled_at)}</span>
+            </article>
+          )) : <p className="sidebar-empty">План пуст</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
 function Workspace({ projectId, user }) {
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [query, setQuery] = useState('');
   const dashboard = useQuery({ queryKey: ['dashboard', projectId], queryFn: () => api(`/dashboard?projectId=${projectId}`) });
   const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
   const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`) });
-  const notifications = useQuery({ queryKey: ['notifications'], queryFn: () => api('/notifications') });
+  const members = useQuery({
+    queryKey: ['members', projectId],
+    queryFn: () => api(`/projects/${projectId}/members`),
+    enabled: user.role === 'manager_owner',
+  });
   const visibleClients = (clients.data || []).filter((client) => {
     const haystack = `${client.name} ${client.short_description || ''} ${(client.tags || []).join(' ')} ${Object.values(client.contacts || {}).join(' ')}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
   const selectedClient = selectedClientId ? visibleClients.find((client) => client.id === selectedClientId) : null;
 
-  if (dashboard.isLoading || stages.isLoading || clients.isLoading) return <Loading label="Загрузка рабочей области..." />;
+  if (dashboard.isLoading || stages.isLoading || clients.isLoading || (user.role === 'manager_owner' && members.isLoading)) return <Loading label="Загрузка рабочей области..." />;
 
   return (
     <section className="workspace-grid">
@@ -233,8 +352,8 @@ function Workspace({ projectId, user }) {
         <div className="metric-grid">
           <Metric label="Клиенты" value={dashboard.data.stats.clients} />
           <Metric label="Портфель" value={money(dashboard.data.stats.activeAmount)} tone="green" />
-          <Metric label="Запланировано" value={dashboard.data.stats.plannedInteractions} tone="amber" />
-          <Metric label="Уведомления" value={dashboard.data.stats.unreadNotifications} tone="violet" />
+          <Metric label="Переходы" value={dashboard.data.stats.transitions} tone="amber" />
+          <Metric label="Просрочено" value={dashboard.data.stats.overdueInteractions} tone="violet" />
         </div>
 
         <div className="toolbar">
@@ -248,32 +367,12 @@ function Workspace({ projectId, user }) {
           projectId={projectId}
           stages={stages.data}
           clients={visibleClients}
+          managers={(members.data || []).filter((member) => member.role === 'sales_manager')}
+          canAssign={user.role === 'manager_owner'}
+          canDelete={user.role === 'manager_owner'}
           onOpenClient={setSelectedClientId}
         />
       </div>
-
-      <aside className="right-rail">
-        <Panel title="Уведомления" icon={Bell}>
-          <div className="rail-list">
-            {(notifications.data || []).slice(0, 4).map((item) => (
-              <article key={item.id} className={item.is_read ? 'rail-item muted' : 'rail-item'}>
-                <strong>{item.title}</strong>
-                <span>{item.body}</span>
-              </article>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Ближайшие события" icon={CalendarClock}>
-          <div className="rail-list">
-            {(dashboard.data.upcoming || []).map((item) => (
-              <article key={item.id} className="rail-item">
-                <strong>{item.title}</strong>
-                <span>{item.client_name} · {dateText(item.scheduled_at)}</span>
-              </article>
-            ))}
-          </div>
-        </Panel>
-      </aside>
 
       {selectedClient && (
         <ClientDrawer
@@ -288,7 +387,7 @@ function Workspace({ projectId, user }) {
   );
 }
 
-function Kanban({ projectId, stages, clients, onOpenClient }) {
+function Kanban({ projectId, stages, clients, managers = [], canAssign = false, canDelete = false, onOpenClient }) {
   const queryClient = useQueryClient();
   const moveClient = useMutation({
     mutationFn: ({ clientId, toStageId }) => api(`/clients/${clientId}/move-stage`, {
@@ -298,6 +397,18 @@ function Kanban({ projectId, stages, clients, onOpenClient }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+    },
+  });
+  const assignClient = useMutation({
+    mutationFn: ({ clientId, managerId }) => api(`/clients/${clientId}/assign`, {
+      method: 'POST',
+      body: { manager_id: Number(managerId) },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
     },
   });
 
@@ -332,11 +443,38 @@ function Kanban({ projectId, stages, clients, onOpenClient }) {
                     <span>{client.manager_name || 'Без менеджера'}</span>
                   </div>
                   <select
+                    aria-label="Этап клиента"
                     value={client.current_stage_id || ''}
                     onChange={(event) => moveClient.mutate({ clientId: client.id, toStageId: event.target.value })}
                   >
                     {stages.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                   </select>
+                  {canAssign && (
+                    <label className="card-select">
+                      <span>Менеджер</span>
+                      <select
+                        value={client.assigned_manager_id || ''}
+                        onChange={(event) => assignClient.mutate({ clientId: client.id, managerId: event.target.value })}
+                        disabled={!managers.length}
+                      >
+                        <option value="" disabled>Выберите менеджера</option>
+                        {managers.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}
+                      </select>
+                    </label>
+                  )}
+                  {canDelete && (
+                    <button
+                      className="danger-button"
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Удалить клиента "${client.name}" навсегда?`)) {
+                          deleteClient.mutate(client.id);
+                        }
+                      }}
+                    >
+                      Удалить клиента
+                    </button>
+                  )}
                 </article>
               ))}
               {stageClients.length === 0 && <div className="empty-column">Нет клиентов</div>}
@@ -348,6 +486,408 @@ function Kanban({ projectId, stages, clients, onOpenClient }) {
   );
 }
 
+function Chats({ projectId, currentUser }) {
+  const queryClient = useQueryClient();
+  const [query, setQuery] = useState('');
+  const [selectedClientId, setSelectedClientId] = useState(null);
+  const [note, setNote] = useState('');
+  const [editingNote, setEditingNote] = useState({ id: null, message: '' });
+  const [clientForm, setClientForm] = useState({ name: '', short_description: '' });
+  const [contactForm, setContactForm] = useState({ phone: '', email: '', telegram: '' });
+  const [eventForm, setEventForm] = useState({ title: '', type: 'call', scheduled_at: '', description: '' });
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(dateKey(new Date()));
+  const [savedAction, setSavedAction] = useState('');
+  const savedTimer = useRef(null);
+  const clients = useQuery({ queryKey: ['clients', projectId], queryFn: () => api(`/projects/${projectId}/clients`) });
+  const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
+
+  function markSaved(action, after) {
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    setSavedAction(action);
+    savedTimer.current = setTimeout(() => {
+      setSavedAction('');
+      after?.();
+    }, 850);
+  }
+
+  useEffect(() => () => {
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+  }, []);
+
+  const visibleClients = (clients.data || []).filter((client) => {
+    const haystack = `${client.name} ${client.short_description || ''} ${(client.tags || []).join(' ')} ${Object.values(client.contacts || {}).join(' ')}`.toLowerCase();
+    return haystack.includes(query.toLowerCase());
+  });
+  const selectedClient = (clients.data || []).find((client) => client.id === selectedClientId);
+  const activeClientId = selectedClient?.id;
+
+  useEffect(() => {
+    if (!selectedClient) return;
+    setClientForm({
+      name: selectedClient.name || '',
+      short_description: selectedClient.short_description || '',
+    });
+    setContactForm({
+      phone: selectedClient.contacts?.phone || '',
+      email: selectedClient.contacts?.email || '',
+      telegram: selectedClient.contacts?.telegram || '',
+    });
+  }, [selectedClientId, selectedClient]);
+
+  const notes = useQuery({
+    queryKey: ['notes', activeClientId],
+    queryFn: () => api(`/clients/${activeClientId}/notes`),
+    enabled: Boolean(activeClientId),
+  });
+  const interactions = useQuery({
+    queryKey: ['interactions', activeClientId],
+    queryFn: () => api(`/clients/${activeClientId}/interactions`),
+    enabled: Boolean(activeClientId),
+  });
+
+  const addNote = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/notes`, {
+      method: 'POST',
+      body: { message: note, source: 'manual' },
+    }),
+    onSuccess: () => {
+      setNote('');
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const updateNote = useMutation({
+    mutationFn: () => api(`/notes/${editingNote.id}`, {
+      method: 'PATCH',
+      body: { message: editingNote.message },
+    }),
+    onSuccess: (updatedNote) => {
+      queryClient.setQueryData(['notes', activeClientId], (old = []) => old.map((item) => (
+        item.id === updatedNote.id ? { ...item, ...updatedNote } : item
+      )));
+      markSaved(`note-${updatedNote.id}`, () => setEditingNote({ id: null, message: '' }));
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const deleteNote = useMutation({
+    mutationFn: (noteId) => api(`/notes/${noteId}`, { method: 'DELETE' }),
+    onSuccess: (_result, noteId) => {
+      queryClient.setQueryData(['notes', activeClientId], (old = []) => old.filter((item) => item.id !== noteId));
+      setEditingNote({ id: null, message: '' });
+      queryClient.invalidateQueries({ queryKey: ['notes', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const moveStage = useMutation({
+    mutationFn: (stageId) => api(`/clients/${activeClientId}/move-stage`, {
+      method: 'POST',
+      body: { to_stage_id: Number(stageId), comment: 'Перемещено из чата' },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const deleteClient = useMutation({
+    mutationFn: (clientId) => api(`/clients/${clientId}`, { method: 'DELETE' }),
+    onSuccess: (_result, clientId) => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((client) => client.id !== clientId));
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+  const updateClient = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}`, {
+      method: 'PATCH',
+      body: clientForm,
+    }),
+    onSuccess: (client) => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.map((item) => (item.id === client.id ? client : item)));
+      markSaved('client');
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const updateContacts = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/contacts`, {
+      method: 'PUT',
+      body: { contacts: contactForm },
+    }),
+    onSuccess: () => {
+      markSaved('contacts');
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+    },
+  });
+  const addInteraction = useMutation({
+    mutationFn: () => api(`/clients/${activeClientId}/interactions`, { method: 'POST', body: eventForm }),
+    onSuccess: (interaction) => {
+      const key = dateKey(interaction.scheduled_at);
+      if (key) {
+        setCalendarMonth(key.slice(0, 7));
+        setSelectedCalendarDay(key);
+      }
+      setEventForm({ title: '', type: 'call', scheduled_at: '', description: '' });
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+    },
+  });
+  const deleteInteraction = useMutation({
+    mutationFn: (interactionId) => api(`/interactions/${interactionId}`, { method: 'DELETE' }),
+    onSuccess: (_result, interactionId) => {
+      queryClient.setQueryData(['interactions', activeClientId], (old = []) => old.filter((item) => item.id !== interactionId));
+      queryClient.invalidateQueries({ queryKey: ['interactions', activeClientId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+
+  const timeline = useMemo(() => {
+    const noteItems = (notes.data || []).map((item) => ({
+      id: `note-${item.id}`,
+      noteId: item.id,
+      kind: 'note',
+      text: item.message,
+      date: item.created_at,
+      managerId: item.manager_id,
+      canEdit: Number(item.manager_id) === Number(currentUser.id),
+    }));
+    const interactionItems = (interactions.data || []).map((item) => ({
+      id: `interaction-${item.id}`,
+      kind: 'interaction',
+      text: item.description || item.title,
+      date: item.completed_at || item.scheduled_at,
+    }));
+    return [...noteItems, ...interactionItems].sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [notes.data, interactions.data, currentUser.id]);
+
+  const groupedTimeline = useMemo(() => timeline.reduce((groups, item) => {
+    const date = dateGroupText(item.date);
+    const lastGroup = groups[groups.length - 1];
+    if (!lastGroup || lastGroup.date !== date) groups.push({ date, items: [item] });
+    else lastGroup.items.push(item);
+    return groups;
+  }, []), [timeline]);
+
+  const calendarGroups = useMemo(() => (interactions.data || []).reduce((groups, item) => {
+    const date = dateKey(item.scheduled_at);
+    groups[date] = [...(groups[date] || []), item];
+    return groups;
+  }, {}), [interactions.data]);
+  const calendarDays = useMemo(() => buildCalendarDays(calendarMonth), [calendarMonth]);
+  const selectedDayEvents = calendarGroups[selectedCalendarDay] || [];
+
+  if (clients.isLoading || stages.isLoading) return <Loading label="Загрузка чатов..." />;
+
+  if (!selectedClient) {
+    return (
+      <section className="chat-picker">
+        <div className="toolbar">
+          <label className="search">
+            <Search size={17} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти клиента" />
+          </label>
+        </div>
+        <div className="chat-picker-grid">
+          {visibleClients.map((client) => (
+            <button className="chat-picker-card" key={client.id} onClick={() => setSelectedClientId(client.id)}>
+              <div>
+                <strong>{client.name}</strong>
+                <span>{client.stage_name || 'Без этапа'} · {client.manager_name || currentUser.name}</span>
+              </div>
+              <ChevronRight size={18} />
+            </button>
+          ))}
+          {visibleClients.length === 0 && <EmptyState title="Клиенты не найдены" text="Попробуйте изменить поисковый запрос." />}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="chat-detail-layout">
+      <section className="chat-history-panel">
+        <header className="chat-header">
+          <div>
+            <button className="back-link" type="button" onClick={() => setSelectedClientId(null)}>← Все клиенты</button>
+            <span>{selectedClient.stage_name || 'Клиент'}</span>
+            <h2>{selectedClient.name}</h2>
+            <p>{selectedClient.short_description || 'История сообщений и заметок по клиенту.'}</p>
+          </div>
+          <strong>{money(selectedClient.deal_amount)}</strong>
+        </header>
+
+        <div className="chat-timeline">
+          {groupedTimeline.map((group) => (
+            <section className="chat-date-group" key={group.date}>
+              <div className="chat-date-separator">{group.date}</div>
+              {group.items.map((item) => (
+                <article className="chat-message" key={item.id}>
+                  <div>
+                    {editingNote.id === item.noteId ? (
+                      <form className="message-edit-form" onSubmit={(event) => {
+                        event.preventDefault();
+                        updateNote.mutate();
+                      }}>
+                        <textarea value={editingNote.message} onChange={(event) => setEditingNote({ ...editingNote, message: event.target.value })} required />
+                        <div className="message-actions">
+                          <button className="secondary-button" type="button" onClick={() => setEditingNote({ id: null, message: '' })}>Отмена</button>
+                          <button className={savedAction === `note-${item.noteId}` ? 'primary-button saved' : 'primary-button'} type="submit">
+                            {savedAction === `note-${item.noteId}` ? 'Сохранено' : 'Сохранить'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <p>{item.text}</p>
+                        <footer className="message-footer">
+                          <time>{timeText(item.date)}</time>
+                          {item.canEdit && (
+                            <span className="message-actions">
+                              <button className="text-button" type="button" onClick={() => setEditingNote({ id: item.noteId, message: item.text })}>Ред..</button>
+                              <button className="text-button danger" type="button" onClick={() => deleteNote.mutate(item.noteId)}>Удалить</button>
+                            </span>
+                          )}
+                        </footer>
+                      </>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </section>
+          ))}
+          {timeline.length === 0 && <EmptyState title="История пуста" text="Добавьте первую заметку по клиенту." />}
+        </div>
+
+        <form className="chat-compose" onSubmit={(event) => {
+          event.preventDefault();
+          addNote.mutate();
+        }}>
+          <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Новая заметка или сообщение по клиенту" required />
+          <button className="primary-button" type="submit">Добавить в историю</button>
+        </form>
+      </section>
+
+      <aside className="chat-side-panel">
+        <Panel title="Клиент" icon={UsersRound}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            updateClient.mutate();
+          }}>
+            <TextInput label="Название клиента" value={clientForm.name} onChange={(name) => setClientForm({ ...clientForm, name })} required />
+            <TextInput label="Короткое описание" value={clientForm.short_description} onChange={(short_description) => setClientForm({ ...clientForm, short_description })} />
+            <button className={savedAction === 'client' ? 'secondary-button saved' : 'secondary-button'} type="submit">
+              {savedAction === 'client' ? 'Сохранено' : 'Сохранить клиента'}
+            </button>
+          </form>
+        </Panel>
+
+        <Panel title="Этап" icon={BriefcaseBusiness}>
+          <Select
+            label="Этап воронки"
+            value={selectedClient.current_stage_id || ''}
+            onChange={(stageId) => moveStage.mutate(stageId)}
+            options={(stages.data || []).map((stage) => [String(stage.id), stage.name])}
+          />
+        </Panel>
+
+        <Panel title="Контакты" icon={UsersRound}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            updateContacts.mutate();
+          }}>
+            <TextInput label="Телефон" value={contactForm.phone} onChange={(phone) => setContactForm({ ...contactForm, phone })} />
+            <TextInput label="Email" value={contactForm.email} onChange={(email) => setContactForm({ ...contactForm, email })} />
+            <TextInput label="Telegram" value={contactForm.telegram} onChange={(telegram) => setContactForm({ ...contactForm, telegram })} />
+            <button className={savedAction === 'contacts' ? 'secondary-button saved' : 'secondary-button'} type="submit">
+              {savedAction === 'contacts' ? 'Сохранено' : 'Сохранить контакты'}
+            </button>
+          </form>
+        </Panel>
+
+        <Panel title="Новое событие" icon={CalendarClock}>
+          <form className="stack-form" onSubmit={(event) => {
+            event.preventDefault();
+            addInteraction.mutate();
+          }}>
+            <TextInput label="Название" value={eventForm.title} onChange={(title) => setEventForm({ ...eventForm, title })} required />
+            <Select label="Тип" value={eventForm.type} onChange={(type) => setEventForm({ ...eventForm, type })} options={[
+              ['call', 'Звонок'],
+              ['meeting', 'Встреча'],
+              ['message', 'Сообщение'],
+              ['email', 'Email'],
+            ]} />
+            <TextInput label="Дата и время" type="datetime-local" value={eventForm.scheduled_at} onChange={(scheduled_at) => setEventForm({ ...eventForm, scheduled_at })} required />
+            <TextInput label="Описание" value={eventForm.description} onChange={(description) => setEventForm({ ...eventForm, description })} />
+            <button className="primary-button" type="submit">Создать событие</button>
+          </form>
+        </Panel>
+
+        <Panel title="Календарь" icon={CalendarClock}>
+          <div className="calendar-widget">
+            <div className="calendar-toolbar">
+              <button type="button" className="icon-button ghost" onClick={() => {
+                const date = new Date(`${calendarMonth}-01T00:00`);
+                date.setMonth(date.getMonth() - 1);
+                setCalendarMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+              }}>‹</button>
+              <strong>{monthTitle(calendarMonth)}</strong>
+              <button type="button" className="icon-button ghost" onClick={() => {
+                const date = new Date(`${calendarMonth}-01T00:00`);
+                date.setMonth(date.getMonth() + 1);
+                setCalendarMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`);
+              }}>›</button>
+            </div>
+            <div className="calendar-weekdays">
+              {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((day) => <span key={day}>{day}</span>)}
+            </div>
+            <div className="calendar-month-grid">
+              {calendarDays.map((day, index) => day ? (
+                <button
+                  type="button"
+                  key={day.key}
+                  className={[
+                    'calendar-cell',
+                    calendarGroups[day.key]?.length ? 'has-events' : '',
+                    selectedCalendarDay === day.key ? 'active' : '',
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => setSelectedCalendarDay(day.key)}
+                >
+                  <span>{day.day}</span>
+                  {calendarGroups[day.key]?.length ? <b>{calendarGroups[day.key].length}</b> : null}
+                </button>
+              ) : <span className="calendar-cell empty" key={`empty-${index}`} />)}
+            </div>
+            <div className="calendar-list">
+              {selectedDayEvents.map((item) => (
+                <article className="calendar-event" key={item.id}>
+                  <div>
+                    <time>{timeText(item.scheduled_at)}</time>
+                    <span>{item.title}</span>
+                  </div>
+                  <button className="text-button danger" type="button" onClick={() => deleteInteraction.mutate(item.id)}>Удалить</button>
+                </article>
+              ))}
+              {selectedDayEvents.length === 0 && <p className="sidebar-empty">На выбранный день событий нет</p>}
+            </div>
+          </div>
+        </Panel>
+      </aside>
+    </section>
+  );
+}
 function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
   const queryClient = useQueryClient();
   const notes = useQuery({ queryKey: ['notes', client.id], queryFn: () => api(`/clients/${client.id}/notes`) });
@@ -375,6 +915,18 @@ function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
     mutationFn: (id) => api(`/interactions/${id}/complete`, { method: 'POST' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['interactions', client.id] }),
   });
+  const deleteClient = useMutation({
+    mutationFn: () => api(`/clients/${client.id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.setQueryData(['clients', projectId], (old = []) => old.filter((item) => item.id !== client.id));
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['sidebar-dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      onClose();
+    },
+  });
 
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
@@ -385,7 +937,22 @@ function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
             <h2>{client.name}</h2>
             <p>{client.short_description}</p>
           </div>
-          <button className="icon-button ghost" onClick={onClose}>×</button>
+          <div className="drawer-actions">
+            {currentUser.role === 'manager_owner' && (
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`Удалить клиента "${client.name}" навсегда?`)) {
+                    deleteClient.mutate();
+                  }
+                }}
+              >
+                Удалить клиента
+              </button>
+            )}
+            <button className="icon-button ghost" onClick={onClose}>×</button>
+          </div>
         </header>
 
         <section className="client-summary">
@@ -451,10 +1018,11 @@ function ClientDrawer({ client, projectId, stages, currentUser, onClose }) {
   );
 }
 
-function ProjectSettings({ projectId }) {
+function ProjectSettings({ projectId, onProjectCreated }) {
   const queryClient = useQueryClient();
   const members = useQuery({ queryKey: ['members', projectId], queryFn: () => api(`/projects/${projectId}/members`) });
   const stages = useQuery({ queryKey: ['stages', projectId], queryFn: () => api(`/projects/${projectId}/pipeline-stages`) });
+  const [projectForm, setProjectForm] = useState({ name: '', description: '' });
   const [memberForm, setMemberForm] = useState({ first_name: '', last_name: '', email: '' });
   const [clientForm, setClientForm] = useState({
     name: '',
@@ -470,6 +1038,15 @@ function ProjectSettings({ projectId }) {
   const managers = (members.data || []).filter((member) => member.role === 'sales_manager');
   const firstStageId = stages.data?.[0]?.id;
 
+  const createProject = useMutation({
+    mutationFn: () => api('/projects', { method: 'POST', body: projectForm }),
+    onSuccess: (project) => {
+      setProjectForm({ name: '', description: '' });
+      queryClient.invalidateQueries({ queryKey: ['me'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      onProjectCreated?.(project.id);
+    },
+  });
   const addMember = useMutation({
     mutationFn: () => api(`/projects/${projectId}/members`, { method: 'POST', body: memberForm }),
     onSuccess: () => {
@@ -498,9 +1075,25 @@ function ProjectSettings({ projectId }) {
   });
   const addStage = useMutation({
     mutationFn: () => api(`/projects/${projectId}/pipeline-stages`, { method: 'POST', body: { name: stageName } }),
-    onSuccess: () => {
+    onSuccess: (stage) => {
       setStageName('');
+      queryClient.setQueryData(['stages', projectId], (old = []) => {
+        const next = old.some((item) => item.id === stage.id) ? old : [...old, stage];
+        return [...next].sort((a, b) => Number(a.position || 0) - Number(b.position || 0));
+      });
       queryClient.invalidateQueries({ queryKey: ['stages', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
+    },
+  });
+  const deleteStage = useMutation({
+    mutationFn: (stageId) => api(`/projects/${projectId}/pipeline-stages/${stageId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['stages', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['clients', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['report', projectId] });
     },
   });
 
@@ -508,6 +1101,18 @@ function ProjectSettings({ projectId }) {
 
   return (
     <section className="settings-grid">
+      <Panel title="Новый проект" icon={BriefcaseBusiness}>
+        <form className="stack-form" onSubmit={(event) => {
+          event.preventDefault();
+          createProject.mutate();
+        }}>
+          <TextInput label="Название проекта" value={projectForm.name} onChange={(name) => setProjectForm({ ...projectForm, name })} required />
+          <TextInput label="Описание" value={projectForm.description} onChange={(description) => setProjectForm({ ...projectForm, description })} />
+          <button className="primary-button" type="submit"><Plus size={18} /> Создать проект</button>
+          <p className="hint">Проект сразу получит базовую воронку: лид, интерес, потребность, переговоры, сделка, отказ.</p>
+        </form>
+      </Panel>
+
       <Panel title="Менеджеры проекта" icon={UserPlus}>
         <form className="stack-form" onSubmit={(event) => {
           event.preventDefault();
@@ -564,9 +1169,19 @@ function ProjectSettings({ projectId }) {
         </form>
         <div className="settings-list">
           {stages.data.map((stage) => (
-            <div key={stage.id}>
-              <strong>{stage.position}. {stage.name}</strong>
-              <span>Максимум без активности: {stage.max_days_without_activity} дней</span>
+            <div className="stage-row" key={stage.id}>
+              <div>
+                <strong>{stage.position}. {stage.name}</strong>
+                <span>Максимум без активности: {stage.max_days_without_activity} дней</span>
+              </div>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => deleteStage.mutate(stage.id)}
+                title="Удалить этап можно только если на нем нет клиентов и истории переходов"
+              >
+                Удалить
+              </button>
             </div>
           ))}
         </div>
@@ -575,9 +1190,10 @@ function ProjectSettings({ projectId }) {
   );
 }
 
-function Reports({ projectId }) {
+function Reports({ projectId, user }) {
   const report = useQuery({ queryKey: ['report', projectId], queryFn: () => api(`/reports/project/${projectId}`) });
   if (report.isLoading) return <Loading label="Считаю метрики..." />;
+  const isOwner = user.role === 'manager_owner';
 
   async function downloadCsv() {
     const token = localStorage.getItem(tokenKey);
@@ -595,11 +1211,21 @@ function Reports({ projectId }) {
 
   return (
     <section className="stack">
+      <div className="report-actions">
+        <button className="primary-button" type="button" onClick={() => report.refetch()}>Сформировать отчёт</button>
+        <button className="secondary-button" type="button" onClick={downloadCsv}><Download size={17} /> Скачать CSV</button>
+      </div>
       <div className="metric-grid">
         <Metric label="Клиенты" value={report.data.stats.clients} />
         <Metric label="Портфель" value={money(report.data.stats.activeAmount)} tone="green" />
-        <Metric label="События" value={report.data.stats.plannedInteractions} tone="amber" />
-        <Metric label="Уведомления" value={report.data.stats.unreadNotifications} tone="violet" />
+        <Metric label="Успешные сделки" value={report.data.stats.wonClients} tone="green" />
+        <Metric label="Сумма сделок" value={money(report.data.stats.wonAmount)} tone="amber" />
+      </div>
+      <div className="metric-grid">
+        <Metric label="Переходы" value={report.data.stats.transitions} />
+        <Metric label="Заметки" value={report.data.stats.notes} tone="green" />
+        <Metric label="Выполнено событий" value={report.data.stats.completedInteractions} tone="amber" />
+        <Metric label="Просрочено" value={report.data.stats.overdueInteractions} tone="violet" />
       </div>
       <div className="two-columns">
         <Panel title="Воронка проекта" icon={BriefcaseBusiness}>
@@ -617,7 +1243,7 @@ function Reports({ projectId }) {
             ))}
           </div>
         </Panel>
-        <Panel title="Лидерборд менеджеров" icon={BarChart3}>
+        <Panel title={isOwner ? 'Лидерборд менеджеров' : 'Моя активность'} icon={BarChart3}>
           <div className="manager-list">
             {report.data.managers.map((manager) => (
               <div className="manager-row" key={manager.id}>
@@ -629,7 +1255,6 @@ function Reports({ projectId }) {
               </div>
             ))}
           </div>
-          <button className="download-link" onClick={downloadCsv}><Download size={17} /> Скачать CSV</button>
         </Panel>
       </div>
     </section>
@@ -654,9 +1279,9 @@ function Metric({ label, value, tone = 'blue' }) {
   );
 }
 
-function Panel({ title, icon: Icon, children }) {
+function Panel({ title, icon: Icon, children, className = '' }) {
   return (
-    <section className="panel">
+    <section className={`panel ${className}`.trim()}>
       <header className="panel-header">
         <h2>{title}</h2>
         {Icon && <div className="panel-action"><Icon size={18} /></div>}
