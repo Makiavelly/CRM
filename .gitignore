@@ -5,5 +5,12 @@ server/data/*.db-*
 .env
 *.log
 
+.gocache
+.gopath
+*.exe
+AGENTS.md
+PROJECT_SPEC.md
+STYLE_GUIDE.md
+
 Kursovaya_rabota_CRM.docx
 db_er.drawio
