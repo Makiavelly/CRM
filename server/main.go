@@ -1656,7 +1656,7 @@ func (a *app) createDefaultCompanyProject(ownerID int64, companyName string) err
 }
 
 func (a *app) createDefaultStages(projectID int64) error {
-	stages := []string{"Лид", "Заинтересованность", "Потребность", "Переговоры", "Сделка", "Отказ"}
+	stages := []string{"Лид", "Заинтересованность", "Квалификация", "Переговоры", "Сделка", "Отказ"}
 	for i, name := range stages {
 		_, err := a.db.Exec(`
 			INSERT INTO funnel_stages (project_id, name, position, is_final_success, is_final_failed)
@@ -1712,7 +1712,7 @@ func (a *app) seedDB() error {
 	}
 	stageLead := stage("Лид", 1, "#2f79c4", false, false, 3)
 	stageInterest := stage("Заинтересованность", 2, "#7464c9", false, false, 5)
-	stageNeed := stage("Потребность", 3, "#2e8b7d", false, false, 7)
+	stageNeed := stage("Квалификация", 3, "#2e8b7d", false, false, 7)
 	stageTalk := stage("Переговоры", 4, "#c9832e", false, false, 7)
 	stageWon := stage("Сделка", 5, "#2e8b7d", true, false, 14)
 	stage("Отказ", 6, "#c85151", false, true, 14)

@@ -212,7 +212,7 @@ function seedDb() {
   `);
   const stageLead = insertStage.run(project, 'Лид', 1, '#2f79c4', 0, 0, 3).lastInsertRowid;
   const stageInterest = insertStage.run(project, 'Заинтересованность', 2, '#7464c9', 0, 0, 5).lastInsertRowid;
-  const stageNeed = insertStage.run(project, 'Потребность', 3, '#2e8b7d', 0, 0, 7).lastInsertRowid;
+  const stageNeed = insertStage.run(project, 'Квалификация', 3, '#2e8b7d', 0, 0, 7).lastInsertRowid;
   const stageTalk = insertStage.run(project, 'Переговоры', 4, '#c9832e', 0, 0, 7).lastInsertRowid;
   const stageWon = insertStage.run(project, 'Сделка', 5, '#2e8b7d', 1, 0, 14).lastInsertRowid;
   insertStage.run(project, 'Отказ', 6, '#c85151', 0, 1, 14);

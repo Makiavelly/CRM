@@ -266,7 +266,7 @@ app.post('/api/auth/register', (req, res) => {
     const company = db.prepare('INSERT INTO companies (name, owner_id) VALUES (?, ?)').run(company_name, user.id).lastInsertRowid;
     const project = db.prepare('INSERT INTO projects (company_id, name, description) VALUES (?, ?, ?)').run(company, 'Первый проект', 'Базовый проект компании').lastInsertRowid;
     db.prepare('INSERT INTO project_members (project_id, user_id, role_in_project) VALUES (?, ?, ?)').run(project, user.id, 'owner');
-    ['Лид', 'Заинтересованность', 'Потребность', 'Переговоры', 'Сделка', 'Отказ'].forEach((name, index) => {
+    ['Лид', 'Заинтересованность', 'Квалификация', 'Переговоры', 'Сделка', 'Отказ'].forEach((name, index) => {
       db.prepare(`
         INSERT INTO funnel_stages (project_id, name, position, is_final_success, is_final_failed)
         VALUES (?, ?, ?, ?, ?)
