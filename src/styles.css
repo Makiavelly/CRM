@@ -257,12 +257,10 @@ textarea {
 .sidebar-digest {
   display: grid;
   gap: 12px;
-  max-height: 42vh;
+  max-height: 52vh;
   margin-top: auto;
-  overflow-y: auto;
+  overflow: hidden;
   padding-top: 18px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(31, 122, 104, 0.34) transparent;
 }
 
 .sidebar-digest-block {
@@ -290,6 +288,20 @@ textarea {
   padding: 9px;
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.58);
+}
+
+.sidebar-digest-scroll {
+  display: grid;
+  gap: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(31, 122, 104, 0.34) transparent;
+}
+
+.sidebar-digest-item.muted {
+  opacity: 0.62;
 }
 
 .sidebar-digest-item strong,
@@ -502,7 +514,9 @@ textarea::placeholder {
 
 .kanban {
   display: grid;
-  grid-template-columns: repeat(6, minmax(250px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(250px, 1fr);
+  grid-template-columns: none;
   gap: 14px;
   overflow-x: auto;
   padding: 2px 2px 10px;
@@ -721,6 +735,12 @@ textarea::placeholder {
   margin-bottom: 18px;
 }
 
+.drawer-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 .drawer-header span {
   color: var(--accent-dark);
   font-size: 13px;
@@ -795,6 +815,201 @@ textarea::placeholder {
   grid-template-columns: 340px minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+.chat-picker {
+  display: grid;
+  gap: 18px;
+}
+
+.chat-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.chat-picker-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 86px;
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  border-radius: 8px;
+  padding: 16px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+}
+
+.chat-picker-card:hover {
+  border-color: rgba(31, 122, 104, 0.22);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.chat-picker-card strong,
+.chat-picker-card span {
+  display: block;
+}
+
+.chat-picker-card span {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 18px;
+  align-items: start;
+}
+
+.chat-side-panel {
+  position: sticky;
+  top: 18px;
+  display: grid;
+  gap: 14px;
+  max-height: calc(100vh - 128px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.back-link {
+  display: inline-flex;
+  width: max-content;
+  margin: 0 0 10px;
+  border: 0;
+  color: var(--accent-dark);
+  background: transparent;
+  padding: 0;
+  font-weight: 760;
+}
+
+.calendar-widget {
+  display: grid;
+  gap: 12px;
+}
+
+.calendar-toolbar {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+}
+
+.calendar-toolbar strong {
+  text-align: center;
+  text-transform: capitalize;
+}
+
+.calendar-toolbar .icon-button {
+  width: 34px;
+  min-height: 34px;
+}
+
+.calendar-weekdays,
+.calendar-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.calendar-weekdays span {
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.calendar-cell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.calendar-cell.empty {
+  border-color: transparent;
+  background: transparent;
+}
+
+.calendar-cell.has-events {
+  border-color: rgba(31, 122, 104, 0.28);
+  background: rgba(232, 244, 240, 0.9);
+}
+
+.calendar-cell.active {
+  color: #ffffff;
+  background: var(--text);
+}
+
+.calendar-cell b {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--accent);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.calendar-cell.active b {
+  background: var(--accent);
+}
+
+.calendar-list {
+  display: grid;
+  gap: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.calendar-day {
+  display: grid;
+  gap: 8px;
+}
+
+.calendar-day > strong {
+  color: var(--accent-dark);
+  font-size: 13px;
+}
+
+.calendar-event {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.calendar-event > div {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.calendar-event time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.calendar-event span {
+  color: var(--text);
+  font-size: 13px;
 }
 
 .chat-layout > .panel {
@@ -992,6 +1207,49 @@ textarea::placeholder {
   display: block;
 }
 
+.message-footer,
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.message-footer {
+  justify-content: space-between;
+}
+
+.text-button {
+  border: 0;
+  color: var(--accent-dark);
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.text-button.danger {
+  color: var(--danger);
+}
+
+.message-edit-form {
+  display: grid;
+  gap: 10px;
+}
+
+.message-edit-form textarea {
+  min-height: 92px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.message-edit-form .message-actions {
+  justify-content: flex-end;
+}
+
 .chat-compose {
   display: grid;
   gap: 12px;
@@ -1060,6 +1318,14 @@ textarea::placeholder {
   border: 1px solid var(--line-strong);
   color: var(--text);
   background: rgba(255, 255, 255, 0.82);
+}
+
+.primary-button.saved,
+.secondary-button.saved {
+  border-color: rgba(31, 122, 104, 0.34);
+  color: #ffffff;
+  background: #1f7a68;
+  box-shadow: 0 12px 28px rgba(31, 122, 104, 0.2);
 }
 
 .danger-button {
@@ -1184,6 +1450,12 @@ textarea::placeholder {
   text-decoration: none;
 }
 
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .empty-state,
 .loading {
   display: grid;
@@ -1208,6 +1480,7 @@ textarea::placeholder {
 @media (max-width: 1220px) {
   .workspace-grid,
   .chat-layout,
+  .chat-detail-layout,
   .settings-grid,
   .two-columns {
     grid-template-columns: 1fr;
@@ -1215,6 +1488,11 @@ textarea::placeholder {
 
   .right-rail {
     position: static;
+  }
+
+  .chat-side-panel {
+    position: static;
+    max-height: none;
   }
 }
 
@@ -1428,7 +1706,8 @@ body::before {
 }
 
 .kanban {
-  grid-template-columns: repeat(6, minmax(278px, 1fr));
+  grid-auto-columns: minmax(278px, 1fr);
+  grid-template-columns: none;
   gap: 16px;
 }
 
